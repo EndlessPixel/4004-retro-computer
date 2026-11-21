@@ -141,6 +141,7 @@ class Nano {
     }
 
     switch (key) {
+      case 'F10': // Ctrl+X 被浏览器/IDE 拦截时的退出备选
       case 'Ctrl+X':
         if (this.dirty) {
           this.mode = 'confirm';

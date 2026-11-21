@@ -50,7 +50,7 @@
 <body>
 <div class="case">
   <div class="screen">
-    <canvas id="screen-canvas" width="640" height="200"></canvas>
+    <canvas id="screen-canvas" width="640" height="200" tabindex="0"></canvas>
   </div>
   <div class="label">intel 4004 · terminal</div>
 </div>
@@ -132,20 +132,32 @@
   const special = {
     Enter:'Enter', Backspace:'Backspace', Delete:'Delete',
     ArrowUp:'ArrowUp', ArrowDown:'ArrowDown', ArrowLeft:'ArrowLeft', ArrowRight:'ArrowRight',
-    Home:'Home', End:'End', Tab:'Tab', Escape:'Escape'
+    Home:'Home', End:'End', Tab:'Tab', Escape:'Escape', F10:'F10'
   };
+  // 让页面拿到键盘焦点，否则 IDE 内嵌浏览器里按键会被外层拦截
+  canvas.focus();
+  canvas.addEventListener('click', () => canvas.focus());
+
   document.addEventListener('keydown', (e) => {
     let key = null;
-    if (e.ctrlKey && e.key.length === 1) key = 'Ctrl+' + e.key.toUpperCase();
-    else key = special[e.key] || (e.key.length === 1 && !e.metaKey ? e.key : null);
+    if (e.ctrlKey) {
+      // 用 code 而非 key：Ctrl 组合下 key 可能是控制字符（如 Ctrl+X 的 \x18）
+      const m = /^Key([A-Z])$/.exec(e.code);
+      if (m) key = 'Ctrl+' + m[1];
+      else if (e.key.length === 1 && /[a-zA-Z]/.test(e.key)) key = 'Ctrl+' + e.key.toUpperCase();
+    } else {
+      key = special[e.key] || (e.key.length === 1 && !e.metaKey ? e.key : null);
+    }
     if (key) {
       fetch('/key', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body:JSON.stringify({key})
       });
+      // Ctrl 组合键尤其要阻止默认行为（Ctrl+X 会被当剪切、Ctrl+W 会关标签页）
       e.preventDefault();
+      e.stopPropagation();
     }
-  });
+  }, true);
 
   requestAnimationFrame(frame);
 </script>
