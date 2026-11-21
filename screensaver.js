@@ -2,20 +2,23 @@ const path = require('path');
 const nodeFs = require('fs');
 
 // CRT 屏保：把 █ 文本画当位图滚动穿过屏幕
-// 文件名含 "block" 的从上到下滚动，其余（默认 4004-SYSTEM）横向滚动
+// VERTICAL 列表中的文件从上到下滚动，其余（默认 4004-SYSTEM）横向滚动
 const BLOCK = '\xdb'; // CP437 全亮块，PSF 字模 219
+const VERTICAL = ['block-line.txt', 'block-rain.txt', 'worse-burn-in.txt'];
 
 class Screensaver {
   constructor(cols = 80, rows = 25, file = null) {
     this.cols = cols;
     this.rows = rows;
     const dir = path.join(__dirname, 'assets', 'screensavers');
-    this.file = file
-      ? (path.isAbsolute(file) ? file : path.join(dir, file))
-      : path.join(dir, '4004-SYSTEM.txt');
+    const resolve = f => {
+      if (path.isAbsolute(f) || nodeFs.existsSync(f)) return f;
+      if (f.includes('screensavers')) return path.join(__dirname, f);
+      return path.join(dir, f);
+    };
+    this.file = file ? resolve(file) : path.join(dir, '4004-SYSTEM.txt');
     this.bitmap = this._load();
-    const base = path.basename(this.file, path.extname(this.file));
-    this.vertical = base.toLowerCase().includes('block');
+    this.vertical = VERTICAL.includes(path.basename(this.file));
     this.h = this.bitmap.length;
     this.w = Math.max(...this.bitmap.map(r => r.length));
     if (this.vertical) this.offset = -this.h; // 从顶部屏幕外进入
