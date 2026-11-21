@@ -567,7 +567,7 @@ const HELP_TEXT = [
   '    true  false  test <expr>  [ <expr> ]',
   '    # comment                 comment runs to end of line',
   '    Shift+PgUp / Shift+PgDn   scroll back / forward (VNC)',
-  '    screensaver [file]      start CRT screensaver (VNC)',
+  '    screensaver [-h] [file] CRT screensaver, top-down; -h = horizontal (VNC)',
   '',
   '  <required>  [optional]  ...  one or more'
 ].join('\n');
@@ -601,9 +601,14 @@ function dispatch(ctx, argv) {
   if (name === 'help') return { code: 0, output: HELP_TEXT + '\n' };
   if (name === 'clear') return { code: 0, output: '\x1b[2J\x1b[H' };
   if (name === 'screensaver' || name === 'scr') {
-    const { operands } = parseArgs(rest, '');
-    const file = operands[0] || null;
-    if (launchScreensaver) { enteredEditor = true; launchScreensaver(file); }
+    const tokens = rest.trim().split(/\s+/).filter(Boolean);
+    let horizontal = false;
+    const operands = [];
+    for (const t of tokens) {
+      if (t === '-h' || t === '--horizontal') horizontal = true;
+      else operands.push(t);
+    }
+    if (launchScreensaver) { enteredEditor = true; launchScreensaver(operands[0] || null, horizontal); }
     else return { code: 1, output: 'screensaver: not available in this mode\n' };
     return { code: 0, output: '' };
   }
@@ -790,11 +795,11 @@ if (VNC) {
     frameDirty = true;
   }
 
-  launchScreensaver = (file) => {
+  launchScreensaver = (file, horizontal = false) => {
     try {
       screensaver = file
-        ? new Screensaver(fb.cols, fb.rows, file)
-        : new Screensaver(fb.cols, fb.rows);
+        ? new Screensaver(fb.cols, fb.rows, file, horizontal)
+        : new Screensaver(fb.cols, fb.rows, null, horizontal);
     } catch (e) {
       screensaver = null;
       enteredEditor = false;
