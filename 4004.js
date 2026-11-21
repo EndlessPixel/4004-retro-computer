@@ -24,7 +24,7 @@ class Intel4004 {
     this.maxMcycle = 1;  // 当前指令一共需要多少M-cycle
     this.instPC = 0;     // 指令起始PC
     this.instOpcode = 0; // 指令操作码
-    this.operandBuf = [];// 参数字节缓存（第2、3字节）
+    this.operandBuf = [];// 参数字节缓存（第2字节）
     this.bus = 0;        // 简化总线
     this.addr = 0;       // 12bit ROM地址总线
   }
@@ -67,6 +67,11 @@ class Intel4004 {
       case 0xB: return 1;       // BBL 单字节！low是立即数
       default: return 1;        // 其余都是1字节
     }
+  }
+
+  _isFetchCycle() {
+    // 4004 的 3-M-cycle 指令（JUN/JMS）只有 2 字节，最后一个M-cycle只执行不取指
+    return this.mcycle === 0 || (this.mcycle === 1 && this.maxMcycle >= 2);
   }
 
   _executeStage(mc) {
@@ -254,14 +259,18 @@ class Intel4004 {
         this.operandBuf = [];
       }
     } else if (t === 1) {
-      this.bus = this.rom[this.addr];
-      if (this.mcycle === 0) {
-        this.instOpcode = this.bus;
+      if (this._isFetchCycle()) {
+        this.bus = this.rom[this.addr];
+        if (this.mcycle === 0) {
+          this.instOpcode = this.bus;
+        } else {
+          this.operandBuf.push(this.bus);
+        }
       } else {
-        this.operandBuf.push(this.bus);
+        this.bus = 0;
       }
     } else if (t === 2) {
-      this.PC = (this.PC + 1) & 0xfff;
+      if (this._isFetchCycle()) this.PC = (this.PC + 1) & 0xfff;
     } else if (t === 3) {
       if (this.mcycle === 0) {
         this.maxMcycle = this._getInstMcycles(this.instOpcode);
@@ -329,3 +338,15 @@ for (let i = 0; i < 30 && !cpu.stop; i++) {
 }
 console.log("===== 停机状态 =====");
 console.log(cpu.dump());
+
+// 验证 JMS/BBL 返回地址：调用 0x010 子程序，BBL 后应回到 0x002 的 HLT
+const cpu2 = new Intel4004();
+const rom2 = new Uint8Array(0x20);
+rom2[0] = 0x40; rom2[1] = 0x10;       // JMS 0x010
+rom2[2] = 0xFF;                       // HLT
+rom2[0x10] = 0xC2; rom2[0x11] = 0x0A; // LDM 0xA
+rom2[0x12] = 0xB0;                    // BBL 0
+cpu2.loadRom(rom2);
+while (!cpu2.stop) cpu2.stepInst();
+console.log("===== JMS/BBL 验证 =====");
+console.log(cpu2.dump());
