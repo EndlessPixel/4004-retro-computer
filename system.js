@@ -12,8 +12,7 @@ const IMG_PATH = path.join(__dirname, 'disk.img');
 const PROGRAM_SECTOR = 1;
 const VNC = process.argv.includes('-vnc');
 
-const FONT_PATH = '/usr/share/consolefonts/Lat15-VGA8.psf.gz';
-const fb = VNC ? new Framebuffer(new Font(FONT_PATH)) : null;
+const fb = VNC ? new Framebuffer(new Font()) : null;
 let frameDirty = true;
 
 function out(text) {
