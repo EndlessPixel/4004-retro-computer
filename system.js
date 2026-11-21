@@ -564,6 +564,7 @@ const HELP_TEXT = [
   '    cmd > file / >> file / < file   redirection',
   '    true  false  test <expr>  [ <expr> ]',
   '    # comment                 comment runs to end of line',
+  '    Shift+PgUp / Shift+PgDn   scroll back / forward (VNC)',
   '',
   '  <required>  [optional]  ...  one or more'
 ].join('\n');
@@ -785,6 +786,12 @@ if (VNC) {
       frameDirty = true;
       return;
     }
+    if (key === 'PageUp' || key === 'PageDown') {
+      if (key === 'PageUp') fb.scrollUp(1); else fb.scrollDown(1);
+      frameDirty = true;
+      return;
+    }
+    if (fb.scrollPos > 0) { fb.resetScroll(); frameDirty = true; }
     if (key === 'Enter') { submitLine(); return; }
     if (key === 'Backspace') {
       if (cursorPos > 0) {

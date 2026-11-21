@@ -190,6 +190,16 @@
   });
 
   document.addEventListener('keydown', (e) => {
+    // Shift+PgUp/PgDn：回滚查看历史输出
+    if (e.shiftKey && (e.code === 'PageUp' || e.code === 'PageDown')) {
+      e.preventDefault();
+      e.stopPropagation();
+      fetch('/key', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({key: e.code === 'PageUp' ? 'PageUp' : 'PageDown'})
+      });
+      return;
+    }
     // Ctrl+Shift+V：从剪贴板粘贴，整段发给后端逐字符处理
     if (e.ctrlKey && e.shiftKey && (e.code === 'KeyV' || e.key.toLowerCase() === 'v')) {
       e.preventDefault();

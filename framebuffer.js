@@ -13,16 +13,40 @@ class Framebuffer {
     this.cy = 0;
     this.cursorOn = true;
     this.pixels = new Uint8Array((this.width / 8) * this.height);
+    this.scrollback = [];   // 被顶出屏幕的历史行（Uint8Array，每行 cols 字节）
+    this.scrollPos = 0;     // 0 = 实时视图；>0 = 向上查看历史的行数
+    this.maxScrollback = 500;
   }
 
   clear() {
     this.cells.fill(0x20);
     this.cx = 0;
     this.cy = 0;
+    this.scrollback = [];
+    this.scrollPos = 0;
+  }
+
+  // 回滚：scrollPos 是向上翻的行数，0 表示实时视图
+  scrollUp(n = 1) {
+    this.scrollPos = Math.min(this.scrollback.length, this.scrollPos + n);
+  }
+  scrollDown(n = 1) {
+    this.scrollPos = Math.max(0, this.scrollPos - n);
+  }
+  resetScroll() { this.scrollPos = 0; }
+
+  // 取屏幕上第 row 行要显示的内容（考虑回滚视图）
+  _visibleRow(row) {
+    const top = this.scrollback.length - this.scrollPos;
+    const v = top + row;
+    if (v < this.scrollback.length) return this.scrollback[v];
+    const idx = (v - this.scrollback.length) * this.cols;
+    return this.cells.subarray(idx, idx + this.cols);
   }
 
   // 用字符网格整屏替换（nano 等全屏程序使用）
   setCells(grid) {
+    this.resetScroll();
     this.cells.fill(0x20);
     for (let r = 0; r < Math.min(grid.length, this.rows); r++) {
       const line = grid[r];
@@ -39,6 +63,8 @@ class Framebuffer {
 
   _lineFeed() {
     if (this.cy + 1 >= this.rows) {
+      this.scrollback.push(this.cells.slice(0, this.cols));
+      if (this.scrollback.length > this.maxScrollback) this.scrollback.shift();
       this.cells.copyWithin(0, this.cols);
       this.cells.fill(0x20, (this.rows - 1) * this.cols);
       this.cy = this.rows - 1;
@@ -63,6 +89,7 @@ class Framebuffer {
   }
 
   write(text) {
+    this.resetScroll(); // 新输出时回到实时视图
     for (let i = 0; i < text.length; i++) {
       const c = text.charCodeAt(i);
       if (c === 0x1b && text.slice(i, i + 4) === '\x1b[2J') { this.clear(); i += 3; continue; }
@@ -71,9 +98,9 @@ class Framebuffer {
     }
   }
 
-  // 把光标位置上的字符反色，实现块光标
-  _renderCell(col, row, invert) {
-    const code = this.cells[row * this.cols + col];
+  // 渲染一个单元格；line 为可见行数据
+  _renderCell(line, col, row, invert) {
+    const code = line[col];
     const glyph = this.font.glyph(code);
     const x0 = col * this.cw;
     const y0 = row * this.ch;
@@ -91,9 +118,11 @@ class Framebuffer {
   render(cursorOn = this.cursorOn) {
     this.pixels.fill(0);
     for (let row = 0; row < this.rows; row++) {
+      const line = this._visibleRow(row);
       for (let col = 0; col < this.cols; col++) {
-        const invert = cursorOn && row === this.cy && col === this.cx;
-        this._renderCell(col, row, invert);
+        // 回滚视图不显示光标
+        const invert = cursorOn && this.scrollPos === 0 && row === this.cy && col === this.cx;
+        this._renderCell(line, col, row, invert);
       }
     }
     return this.pixels;
