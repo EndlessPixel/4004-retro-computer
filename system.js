@@ -7,6 +7,7 @@ const { Disk } = require('./disk');
 const { FileSystem } = require('./fs');
 const { Font } = require('./font');
 const { Framebuffer } = require('./framebuffer');
+const { Nano } = require('./nano');
 
 const IMG_PATH = process.env.IMG_PATH || path.join(__dirname, 'disk.img');
 const PROGRAM_SECTOR = 1;
@@ -96,6 +97,8 @@ function printViaCpu(text) {
 
 let cwd = '/';
 let rl = null;
+let launchEditor = null; // 由前端/终端层注入的 nano 启动函数
+let enteredEditor = false; // handle() 是否刚启动了全屏编辑器
 
 function normalizePath(target) {
   if (!target || target === '~') return '/home';
@@ -242,7 +245,7 @@ function handle(line) {
     return false;
   }
   if (cmd === 'help') {
-    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | clear | exit\n');
+    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | nano [file] | clear | exit\n');
   } else if (cmd === 'clear') {
     out('\x1b[2J\x1b[H');
   } else if (cmd === 'echo') {
@@ -270,6 +273,11 @@ function handle(line) {
   } else if (cmd === 'mv' || cmd.startsWith('mv ')) {
     const err = cmdMv(cmd.slice(2));
     if (err) printViaCpu(err);
+  } else if (cmd === 'nano' || cmd.startsWith('nano ')) {
+    const { operands, error } = parseArgs(cmd.slice(4), '');
+    if (error) out(`nano: ${error}\n`);
+    else if (launchEditor) { enteredEditor = true; launchEditor(operands[0] || ''); }
+    else out('nano: not available in this mode\n');
   } else {
     out(`unknown command: ${cmd.split(/\s+/)[0]}\n`);
   }
@@ -282,8 +290,10 @@ if (VNC) {
   const clients = new Set();
   let inputBuf = '';
   let drawnLen = 0; // 当前行已绘制的输入长度（不含提示符）
+  let cursorPos = 0; // 输入行内光标位置
   const history = [];
   let histIdx = 0;
+  let editor = null; // nano 实例，非 null 时接管所有按键
 
   function promptStr() { return `4004${cwd}> `; }
 
@@ -296,7 +306,9 @@ if (VNC) {
   function redrawInput() {
     const prompt = promptStr();
     const clearLen = Math.min(prompt.length + Math.max(drawnLen, inputBuf.length), fb.cols - 1);
+    const row = fb.cy;
     fb.write('\r' + ' '.repeat(clearLen) + '\r' + prompt + inputBuf);
+    fb.goto(Math.min(prompt.length + cursorPos, fb.cols - 1), row);
     drawnLen = inputBuf.length;
     frameDirty = true;
   }
@@ -307,35 +319,79 @@ if (VNC) {
     inputBuf = '';
     if (cmd.trim()) { history.push(cmd); histIdx = history.length; }
     drawnLen = 0;
+    cursorPos = 0;
     const keep = handle(cmd);
     if (!keep) fb.write('[session closed]\n');
-    else fb.write(promptStr());
+    else if (!enteredEditor) fb.write(promptStr());
+    enteredEditor = false;
     frameDirty = true;
   }
 
+  function renderEditor() {
+    fb.setCells(editor.render());
+    fb.goto(editor.col, editor.row - editor.top + 1);
+    frameDirty = true;
+  }
+
+  function startEditor(filename) {
+    const target = normalizePath(filename);
+    const existing = fs.stat(target);
+    const content = existing && existing.type === 'f' ? fs.readFile(target) : '';
+    editor = new Nano(fs, cwd, filename, content);
+    renderEditor();
+    broadcast();
+  }
+  launchEditor = startEditor;
+
   function onKey(key) {
+    if (editor) {
+      const result = editor.onKey(key);
+      if (result.exit) {
+        editor = null;
+        fb.clear();
+        fb.write(promptStr());
+      } else {
+        renderEditor();
+      }
+      frameDirty = true;
+      return;
+    }
     if (key === 'Enter') { submitLine(); return; }
     if (key === 'Backspace') {
-      if (inputBuf.length) {
-        inputBuf = inputBuf.slice(0, -1);
-        drawnLen = inputBuf.length;
-        fb.write('\b \b');
-        frameDirty = true;
+      if (cursorPos > 0) {
+        inputBuf = inputBuf.slice(0, cursorPos - 1) + inputBuf.slice(cursorPos);
+        cursorPos--;
+        redrawInput();
       }
       return;
     }
+    if (key === 'Delete') {
+      if (cursorPos < inputBuf.length) {
+        inputBuf = inputBuf.slice(0, cursorPos) + inputBuf.slice(cursorPos + 1);
+        redrawInput();
+      }
+      return;
+    }
+    if (key === 'ArrowLeft' || key === 'ArrowRight') {
+      if (key === 'ArrowLeft' && cursorPos > 0) cursorPos--;
+      else if (key === 'ArrowRight' && cursorPos < inputBuf.length) cursorPos++;
+      redrawInput();
+      return;
+    }
+    if (key === 'Home') { cursorPos = 0; redrawInput(); return; }
+    if (key === 'End') { cursorPos = inputBuf.length; redrawInput(); return; }
     if (key === 'ArrowUp' || key === 'ArrowDown') {
       if (!history.length) return;
       histIdx = Math.max(0, Math.min(history.length, histIdx + (key === 'ArrowUp' ? -1 : 1)));
       inputBuf = history[histIdx] || '';
+      cursorPos = inputBuf.length;
       redrawInput();
       return;
     }
     if (key.length === 1 && key.charCodeAt(0) >= 32 && key.charCodeAt(0) <= 126) {
-      inputBuf += key;
-      drawnLen = inputBuf.length;
-      fb.write(key);
-      frameDirty = true;
+      inputBuf = inputBuf.slice(0, cursorPos) + key + inputBuf.slice(cursorPos);
+      cursorPos++;
+      redrawInput();
     }
   }
 
@@ -381,11 +437,59 @@ if (VNC) {
   }, 530);
 } else {
   rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  let cliEditor = null;
+
+  const KEYMAP = {
+    enter: 'Enter', backspace: 'Backspace', delete: 'Delete',
+    left: 'ArrowLeft', right: 'ArrowRight', up: 'ArrowUp', down: 'ArrowDown',
+    home: 'Home', end: 'End', escape: 'Escape', tab: 'Tab'
+  };
+  function keyName(str, key) {
+    if (key.ctrl && key.name) return 'Ctrl+' + key.name.toUpperCase();
+    if (KEYMAP[key.name]) return KEYMAP[key.name];
+    return str || '';
+  }
+  function renderCliEditor() {
+    out('\x1b[2J\x1b[H');
+    const grid = cliEditor.render();
+    out(grid.join('\r\n'));
+    out(`\x1b[${cliEditor.row - cliEditor.top + 2};${cliEditor.col + 1}H`);
+  }
+  function exitCliEditor() {
+    cliEditor = null;
+    readline.emitKeypressEvents(process.stdin);
+    process.stdin.setRawMode(false);
+    process.stdin.pause();
+    rl.resume();
+    out('\r\n' + promptStr());
+  }
+
+  launchEditor = (filename) => {
+    const target = normalizePath(filename);
+    const existing = fs.stat(target);
+    const content = existing && existing.type === 'f' ? fs.readFile(target) : '';
+    cliEditor = new Nano(fs, cwd, filename, content);
+    rl.pause();
+    readline.emitKeypressEvents(process.stdin);
+    if (process.stdin.isTTY) process.stdin.setRawMode(true);
+    process.stdin.resume();
+    renderCliEditor();
+  };
+
   out(BANNER);
   rl.setPrompt(`4004${cwd}> `);
   rl.prompt();
   rl.on('line', (line) => {
-    if (handle(line) !== false) rl.prompt();
+    const keep = handle(line);
+    if (keep !== false && !enteredEditor) rl.prompt();
+    enteredEditor = false;
   });
   rl.on('close', () => out('\n'));
+  process.stdin.on('keypress', (str, key) => {
+    if (!cliEditor || !key) return;
+    const name = keyName(str, key);
+    const result = cliEditor.onKey(name);
+    if (result.exit) exitCliEditor();
+    else renderCliEditor();
+  });
 }

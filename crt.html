@@ -130,10 +130,14 @@
   };
 
   const special = {
-    Enter:'Enter', Backspace:'Backspace', ArrowUp:'ArrowUp', ArrowDown:'ArrowDown'
+    Enter:'Enter', Backspace:'Backspace', Delete:'Delete',
+    ArrowUp:'ArrowUp', ArrowDown:'ArrowDown', ArrowLeft:'ArrowLeft', ArrowRight:'ArrowRight',
+    Home:'Home', End:'End', Tab:'Tab', Escape:'Escape'
   };
   document.addEventListener('keydown', (e) => {
-    const key = special[e.key] || (e.key.length === 1 ? e.key : null);
+    let key = null;
+    if (e.ctrlKey && e.key.length === 1) key = 'Ctrl+' + e.key.toUpperCase();
+    else key = special[e.key] || (e.key.length === 1 && !e.metaKey ? e.key : null);
     if (key) {
       fetch('/key', {
         method:'POST', headers:{'Content-Type':'application/json'},

@@ -21,6 +21,22 @@ class Framebuffer {
     this.cy = 0;
   }
 
+  // 用字符网格整屏替换（nano 等全屏程序使用）
+  setCells(grid) {
+    this.cells.fill(0x20);
+    for (let r = 0; r < Math.min(grid.length, this.rows); r++) {
+      const line = grid[r];
+      for (let c = 0; c < Math.min(line.length, this.cols); c++) {
+        this.cells[r * this.cols + c] = line.charCodeAt(c) & 0xff;
+      }
+    }
+  }
+
+  goto(col, row) {
+    this.cx = Math.max(0, Math.min(this.cols - 1, col));
+    this.cy = Math.max(0, Math.min(this.rows - 1, row));
+  }
+
   _lineFeed() {
     if (this.cy + 1 >= this.rows) {
       this.cells.copyWithin(0, this.cols);
