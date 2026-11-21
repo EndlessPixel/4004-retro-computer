@@ -89,7 +89,7 @@ class FileSystem {
     return this._readEntries(sector);
   }
 
-  readFile(path) {
+  readBytes(path) {
     const parts = path.split('/').filter(Boolean);
     if (!parts.length) return null;
     const name = parts.pop();
@@ -103,7 +103,12 @@ class FileSystem {
       if (b === 0) break;
       bytes.push(b);
     }
-    return String.fromCharCode(...bytes);
+    return bytes;
+  }
+
+  readFile(path) {
+    const bytes = this.readBytes(path);
+    return bytes === null ? null : String.fromCharCode(...bytes);
   }
 
   // 递归遍历，返回 [{ path, entry, depth }]，不含起点本身

@@ -245,6 +245,51 @@ function readLines(path) {
   return lines;
 }
 
+function cmdSleep(arg) {
+  const { operands } = parseArgs(arg, '');
+  if (!operands.length) return 'sleep: missing operand';
+  const sec = parseFloat(operands[0]);
+  if (isNaN(sec) || sec < 0) return `sleep: invalid time interval '${operands[0]}'`;
+  const ms = Math.min(sec * 1000, 5000);
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  return null;
+}
+
+function cmdHexdump(arg) {
+  const { operands } = parseArgs(arg, '');
+  if (!operands.length) return 'hexdump: missing file operand';
+  const bytes = fs.readBytes(normalizePath(operands[0]));
+  if (bytes === null) return `hexdump: ${operands[0]}: No such file`;
+  const lines = [];
+  for (let off = 0; off < bytes.length; off += 16) {
+    const chunk = bytes.slice(off, off + 16);
+    const hex = chunk.map(b => b.toString(16).padStart(2, '0')).join(' ').padEnd(47, ' ');
+    const ascii = chunk.map(b => (b >= 32 && b <= 126) ? String.fromCharCode(b) : '.').join('');
+    lines.push(`${off.toString(16).padStart(8, '0')}  ${hex}  |${ascii}|`);
+  }
+  lines.push(`${bytes.length.toString(16).padStart(8, '0')}`);
+  return lines.join('\n');
+}
+
+function cmdStrings(arg) {
+  const { operands } = parseArgs(arg, 'n');
+  let min = 4;
+  const m = arg.match(/(?:^|\s)-n\s*(\d+)/);
+  if (m) min = parseInt(m[1], 10);
+  const file = operands[operands.length - 1];
+  if (!file) return 'strings: missing file operand';
+  const bytes = fs.readBytes(normalizePath(file));
+  if (bytes === null) return `strings: ${file}: No such file`;
+  const out = [];
+  let cur = '';
+  for (const b of bytes) {
+    if (b >= 32 && b <= 126) cur += String.fromCharCode(b);
+    else { if (cur.length >= min) out.push(cur); cur = ''; }
+  }
+  if (cur.length >= min) out.push(cur);
+  return out.join('\n');
+}
+
 function cmdHeadTail(arg, tail) {
   const name = tail ? 'tail' : 'head';
   let count = 10;
@@ -414,7 +459,7 @@ function handle(line) {
     return false;
   }
   if (cmd === 'help') {
-    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | nano [file] | touch <file> | stat <file> | find [path] | tree [path] | du [path] | head [-n N] <file> | tail [-n N] <file> | wc [-lwc] <file> | grep [-iv] <pat> <file> | sort [-r] <file> | df | free | clear | exit\n');
+    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | nano [file] | touch <file> | stat <file> | find [path] | tree [path] | du [path] | head [-n N] <file> | tail [-n N] <file> | wc [-lwc] <file> | grep [-iv] <pat> <file> | sort [-r] <file> | sleep <sec> | hexdump <file> | strings [-n N] <file> | df | free | clear | exit\n');
   } else if (cmd === 'clear') {
     out('\x1b[2J\x1b[H');
   } else if (cmd === 'echo') {
@@ -468,6 +513,13 @@ function handle(line) {
     printViaCpu(cmdGrep(cmd.slice(4)));
   } else if (cmd === 'sort' || cmd.startsWith('sort ')) {
     printViaCpu(cmdSort(cmd.slice(4)));
+  } else if (cmd === 'sleep' || cmd.startsWith('sleep ')) {
+    const err = cmdSleep(cmd.slice(5));
+    if (err) printViaCpu(err);
+  } else if (cmd === 'hexdump' || cmd.startsWith('hexdump ')) {
+    printViaCpu(cmdHexdump(cmd.slice(7)));
+  } else if (cmd === 'strings' || cmd.startsWith('strings ')) {
+    printViaCpu(cmdStrings(cmd.slice(7)));
   } else if (cmd === 'df') {
     printViaCpu(cmdDf());
   } else if (cmd === 'free') {
