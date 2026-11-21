@@ -168,14 +168,21 @@ class FileSystem {
     return true;
   }
 
-  mkdir(path) {
+  mkdir(path, parents = false) {
+    const existing = this.stat(path);
+    if (existing) return parents && existing.type === 'd' ? null : 'exists';
     const parts = path.split('/').filter(Boolean);
     if (!parts.length) return 'exists';
     const name = parts.pop();
     if (name.length > 8) return 'name too long';
-    const parent = this.resolve('/' + parts.join('/'));
-    if (parent === null) return 'no such directory';
-    if (this._readEntries(parent).some(e => e.name === name)) return 'exists';
+    const parentPath = '/' + parts.join('/');
+    let parent = this.resolve(parentPath);
+    if (parent === null) {
+      if (!parents) return 'no such directory';
+      const err = this.mkdir(parentPath, true);
+      if (err) return err;
+      parent = this.resolve(parentPath);
+    }
     const sector = this._allocSector();
     if (sector === null) return 'no free sector';
     this._clearSector(sector);
@@ -203,11 +210,18 @@ class FileSystem {
     return null;
   }
 
-  rm(path) {
+  rm(path, recursive = false, force = false) {
     if (path === '/') return 'is a directory';
     const loc = this._locate(path);
-    if (!loc || !loc.entry) return 'no such file';
-    if (loc.entry.type === 'd') return 'is a directory';
+    if (!loc || !loc.entry) return force ? null : 'no such file';
+    if (loc.entry.type === 'd') {
+      if (!recursive) return 'is a directory';
+      for (const e of this._readEntries(loc.entry.sector)) {
+        const child = (path === '/' ? '' : path) + '/' + e.name;
+        const err = this.rm(child, true, force);
+        if (err) return err;
+      }
+    }
     this._removeEntry(loc.parent, loc.name);
     this._clearSector(loc.entry.sector);
     return null;

@@ -8,7 +8,7 @@ const { FileSystem } = require('./fs');
 const { Font } = require('./font');
 const { Framebuffer } = require('./framebuffer');
 
-const IMG_PATH = path.join(__dirname, 'disk.img');
+const IMG_PATH = process.env.IMG_PATH || path.join(__dirname, 'disk.img');
 const PROGRAM_SECTOR = 1;
 const VNC = process.argv.includes('-vnc');
 
@@ -112,14 +112,22 @@ function normalizePath(target) {
 }
 
 function cmdLs(arg) {
-  const target = normalizePath(arg || '.');
-  const entries = fs.list(target);
-  if (!entries) return `ls: ${target}: no such directory`;
-  return entries.map(e => e.type === 'd' ? `${e.name}/` : e.name).join('  ') || '(empty)';
+  const { operands } = parseArgs(arg, '');
+  const targets = operands.length ? operands : ['.'];
+  const lines = [];
+  for (const name of targets) {
+    const target = normalizePath(name);
+    const entries = fs.list(target);
+    if (!entries) return `ls: ${target}: no such directory`;
+    lines.push(entries.map(e => e.type === 'd' ? `${e.name}/` : e.name).join('  ') || '(empty)');
+  }
+  return lines.join('\n');
 }
 
 function cmdCd(arg) {
-  const target = normalizePath(arg);
+  const { operands } = parseArgs(arg, '');
+  if (operands.length > 1) return 'cd: too many arguments';
+  const target = normalizePath(operands[0]);
   if (fs.resolve(target) === null) return `cd: ${target}: no such directory`;
   cwd = target;
   if (rl) rl.setPrompt(`4004${cwd}> `);
@@ -127,11 +135,15 @@ function cmdCd(arg) {
 }
 
 function cmdCat(arg) {
-  if (!arg) return 'cat: missing file operand';
-  const target = normalizePath(arg);
-  const content = fs.readFile(target);
-  if (content === null) return `cat: ${target}: no such file`;
-  return content.replace(/[^\x20-\x7e\n]/g, '.');
+  const { operands } = parseArgs(arg, '');
+  if (!operands.length) return 'cat: missing file operand';
+  let result = '';
+  for (const name of operands) {
+    const content = fs.readFile(normalizePath(name));
+    if (content === null) return `cat: ${name}: no such file`;
+    result += content.replace(/[^\x20-\x7e\n]/g, '.');
+  }
+  return result;
 }
 
 const FS_ERR = {
@@ -141,40 +153,85 @@ const FS_ERR = {
 };
 const fsErr = e => FS_ERR[e] || e.charAt(0).toUpperCase() + e.slice(1);
 
-function splitArgs(s) { return s.trim().split(/\s+/).filter(Boolean); }
+// 仿 getopt：解析出选项集合与位置参数，-- 之后一律当位置参数
+function parseArgs(s, allowed) {
+  const opts = new Set();
+  const operands = [];
+  let endOpts = false;
+  for (const tok of s.trim().split(/\s+/).filter(Boolean)) {
+    if (!endOpts && tok === '--') { endOpts = true; continue; }
+    if (!endOpts && tok.startsWith('-') && tok.length > 1) {
+      let ok = true;
+      for (const c of tok.slice(1)) {
+        if (allowed.includes(c)) opts.add(c);
+        else ok = false;
+      }
+      if (!ok) return { error: `invalid option -- '${tok.slice(1)}'` };
+      continue;
+    }
+    operands.push(tok);
+  }
+  return { opts, operands };
+}
 
 function cmdMkdir(arg) {
-  const args = splitArgs(arg);
-  if (!args.length) return 'mkdir: missing operand';
-  const target = normalizePath(args[0]);
-  const err = fs.mkdir(target);
-  return err ? `mkdir: cannot create directory '${args[0]}': ${fsErr(err)}` : null;
+  const { opts, operands, error } = parseArgs(arg, 'p');
+  if (error) return `mkdir: ${error}`;
+  if (!operands.length) return 'mkdir: missing operand';
+  const errors = [];
+  for (const name of operands) {
+    const err = fs.mkdir(normalizePath(name), opts.has('p'));
+    if (err) errors.push(`mkdir: cannot create directory '${name}': ${fsErr(err)}`);
+  }
+  return errors.join('\n') || null;
 }
 
 function cmdRm(arg) {
-  const args = splitArgs(arg);
-  if (!args.length) return 'rm: missing operand';
-  const target = normalizePath(args[0]);
-  const err = fs.rm(target);
-  return err ? `rm: cannot remove '${args[0]}': ${fsErr(err)}` : null;
+  const { opts, operands, error } = parseArgs(arg, 'rfR');
+  if (error) return `rm: ${error}`;
+  if (!operands.length) return 'rm: missing operand';
+  const recursive = opts.has('r') || opts.has('R');
+  const force = opts.has('f');
+  const errors = [];
+  for (const name of operands) {
+    const err = fs.rm(normalizePath(name), recursive, force);
+    if (err && !force) errors.push(`rm: cannot remove '${name}': ${fsErr(err)}`);
+  }
+  return errors.join('\n') || null;
 }
 
 function cmdCp(arg) {
-  const args = splitArgs(arg);
-  if (args.length < 2) return 'cp: missing destination file operand';
-  const src = normalizePath(args[0]);
-  const dst = normalizePath(args[1]);
-  const err = fs.cp(src, dst);
-  return err ? `cp: ${fsErr(err)}` : null;
+  const { operands, error } = parseArgs(arg, '');
+  if (error) return `cp: ${error}`;
+  if (operands.length < 2) return 'cp: missing destination file operand';
+  const dst = normalizePath(operands[operands.length - 1]);
+  const dstStat = fs.stat(dst);
+  if (operands.length > 2 && (!dstStat || dstStat.type !== 'd')) {
+    return `cp: target '${operands[operands.length - 1]}': Not a directory`;
+  }
+  const errors = [];
+  for (const src of operands.slice(0, -1)) {
+    const err = fs.cp(normalizePath(src), dst);
+    if (err) errors.push(`cp: ${fsErr(err)}`);
+  }
+  return errors.join('\n') || null;
 }
 
 function cmdMv(arg) {
-  const args = splitArgs(arg);
-  if (args.length < 2) return 'mv: missing destination file operand';
-  const src = normalizePath(args[0]);
-  const dst = normalizePath(args[1]);
-  const err = fs.mv(src, dst);
-  return err ? `mv: ${fsErr(err)}` : null;
+  const { operands, error } = parseArgs(arg, '');
+  if (error) return `mv: ${error}`;
+  if (operands.length < 2) return 'mv: missing destination file operand';
+  const dst = normalizePath(operands[operands.length - 1]);
+  const dstStat = fs.stat(dst);
+  if (operands.length > 2 && (!dstStat || dstStat.type !== 'd')) {
+    return `mv: target '${operands[operands.length - 1]}': Not a directory`;
+  }
+  const errors = [];
+  for (const src of operands.slice(0, -1)) {
+    const err = fs.mv(normalizePath(src), dst);
+    if (err) errors.push(`mv: ${fsErr(err)}`);
+  }
+  return errors.join('\n') || null;
 }
 
 function handle(line) {
