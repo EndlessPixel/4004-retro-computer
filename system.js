@@ -251,15 +251,56 @@ function readLines(path) {
 }
 
 function cmdBeep(arg) {
-  const { operands } = parseArgs(arg, '');
-  const freq = operands[0] ? parseFloat(operands[0]) : 440;
-  const ms = operands[1] ? parseFloat(operands[1]) : 200;
-  const wave = operands[2] || 'square';
-  if (isNaN(freq) || freq <= 0) return `beep: invalid frequency '${operands[0]}'`;
-  if (isNaN(ms) || ms <= 0) return `beep: invalid duration '${operands[1]}'`;
+  // Linux beep 风格：-f 频率 -l 时长(ms) -r 重复 -d 间隔(ms) -n 波形 -v 音量
+  // 同时兼容位置参数：beep <freq> <ms> <wave>
+  let freq = 440, ms = 200, repeat = 1, delayMs = 100, wave = 'square';
+  let volume = null;
+  const tokens = arg.trim().split(/\s+/).filter(Boolean);
+  const positional = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t === '--') { positional.push(...tokens.slice(i + 1)); break; }
+    const opt = { '-f': 'f', '-l': 'l', '-r': 'r', '-d': 'd', '-n': 'n', '-v': 'v' }[t];
+    if (opt && i + 1 < tokens.length) {
+      const val = tokens[++i];
+      if (opt === 'f') freq = parseFloat(val);
+      else if (opt === 'l') ms = parseFloat(val);
+      else if (opt === 'r') repeat = parseInt(val, 10);
+      else if (opt === 'd') delayMs = parseFloat(val);
+      else if (opt === 'n') wave = val;
+      else if (opt === 'v') volume = parseFloat(val);
+      continue;
+    }
+    if (t.startsWith('-f') && t.length > 2) { freq = parseFloat(t.slice(2)); continue; }
+    if (t.startsWith('-l') && t.length > 2) { ms = parseFloat(t.slice(2)); continue; }
+    if (t.startsWith('-') && t.length > 1) return `beep: invalid option '${t}'`;
+    positional.push(t);
+  }
+  if (positional[0]) freq = parseFloat(positional[0]);
+  if (positional[1]) ms = parseFloat(positional[1]);
+  if (positional[2]) wave = positional[2];
+  if (isNaN(freq) || freq <= 0) return `beep: invalid frequency '${freq}'`;
+  if (isNaN(ms) || ms <= 0) return `beep: invalid duration '${ms}'`;
+  if (isNaN(repeat) || repeat < 1 || repeat > 20) return `beep: invalid repeat '${repeat}'`;
   if (!['square', 'sine', 'triangle'].includes(wave)) return `beep: unknown waveform '${wave}'`;
+  if (volume !== null) {
+    if (isNaN(volume) || volume < 0 || volume > 255) return `beep: invalid volume '${volume}'`;
+    sound.setVolume(volume);
+  }
   if (!sound.enabled) return 'beep: sound card disabled';
-  const data = sound.tone(freq, Math.min(ms, 5000), wave);
+
+  const toneMs = Math.min(ms, 5000);
+  const toneData = sound.tone(freq, toneMs, wave);
+  // 重复：把静音间隔插在每段之间
+  let data = toneData;
+  if (repeat > 1) {
+    const gap = new Uint8Array(Math.max(0, Math.floor(sound.sampleRate * delayMs / 1000))).fill(128);
+    const parts = [];
+    for (let r = 0; r < repeat; r++) { if (r) parts.push(gap); parts.push(toneData); }
+    data = new Uint8Array(parts.reduce((a, p) => a + p.length, 0));
+    let off = 0;
+    for (const p of parts) { data.set(p, off); off += p.length; }
+  }
   if (playSound) playSound(data, sound.sampleRate);
   return null;
 }
@@ -478,7 +519,7 @@ function handle(line) {
     return false;
   }
   if (cmd === 'help') {
-    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | nano [file] | touch <file> | stat <file> | find [path] | tree [path] | du [path] | head [-n N] <file> | tail [-n N] <file> | wc [-lwc] <file> | grep [-iv] <pat> <file> | sort [-r] <file> | sleep <sec> | beep [freq] [ms] [wave] | hexdump <file> | strings [-n N] <file> | df | free | clear | exit\n');
+    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | nano [file] | touch <file> | stat <file> | find [path] | tree [path] | du [path] | head [-n N] <file> | tail [-n N] <file> | wc [-lwc] <file> | grep [-iv] <pat> <file> | sort [-r] <file> | sleep <sec> | beep [-f Hz] [-l ms] [-r n] [-d ms] [-n wave] [-v vol] | hexdump <file> | strings [-n N] <file> | df | free | clear | exit\n');
   } else if (cmd === 'clear') {
     out('\x1b[2J\x1b[H');
   } else if (cmd === 'echo') {

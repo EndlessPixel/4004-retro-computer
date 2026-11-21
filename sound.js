@@ -25,6 +25,11 @@ class SoundCard {
     };
   }
 
+  setVolume(v) {
+    this.volume = Math.max(0, Math.min(255, v));
+    return this.volume;
+  }
+
   // 生成 8-bit unsigned PCM 采样数组
   tone(freq = 440, durationMs = 200, wave = 'square') {
     const count = Math.max(1, Math.floor(this.sampleRate * durationMs / 1000));
