@@ -5,6 +5,12 @@ const HOME_SECTOR = 3;
 const USER_SECTOR = 4;
 const FORMAT_VERSION = 2;
 
+// 目录项名字段只有 8 字节，长文件名用内部短名存储，对外按原名显示
+const NAME_ALIAS = { '.bash_history': 'bashhist' };
+const NAME_DISPLAY = { 'bashhist': '.bash_history' };
+const internalName = name => NAME_ALIAS[name] || name;
+const displayName = name => NAME_DISPLAY[name] || name;
+
 class FileSystem {
   constructor(disk) {
     this.disk = disk;
@@ -76,7 +82,7 @@ class FileSystem {
     if (!path || path === '/') return ROOT_SECTOR;
     let sector = ROOT_SECTOR;
     for (const part of path.split('/').filter(Boolean)) {
-      const entry = this._readEntries(sector).find(e => e.name === part && e.type === 'd');
+      const entry = this._readEntries(sector).find(e => e.name === internalName(part) && e.type === 'd');
       if (!entry) return null;
       sector = entry.sector;
     }
@@ -86,7 +92,7 @@ class FileSystem {
   list(path) {
     const sector = this.resolve(path);
     if (sector === null) return null;
-    return this._readEntries(sector);
+    return this._readEntries(sector).map(e => ({ ...e, name: displayName(e.name) }));
   }
 
   readBytes(path) {
@@ -95,7 +101,7 @@ class FileSystem {
     const name = parts.pop();
     const dirSector = this.resolve('/' + parts.join('/'));
     if (dirSector === null) return null;
-    const entry = this._readEntries(dirSector).find(e => e.name === name && e.type === 'f');
+    const entry = this._readEntries(dirSector).find(e => e.name === internalName(name) && e.type === 'f');
     if (!entry) return null;
     const bytes = [];
     for (let i = 0; i < 256; i++) {
@@ -116,8 +122,9 @@ class FileSystem {
     const out = [];
     const visit = (p, sector, depth) => {
       for (const e of this._readEntries(sector)) {
-        const child = (p === '/' ? '' : p) + '/' + e.name;
-        out.push({ path: child, entry: e, depth });
+        const name = displayName(e.name);
+        const child = (p === '/' ? '' : p) + '/' + name;
+        out.push({ path: child, entry: { ...e, name }, depth });
         if (e.type === 'd') visit(child, e.sector, depth + 1);
       }
     };
@@ -158,7 +165,7 @@ class FileSystem {
   _locate(path) {
     const parts = path.split('/').filter(Boolean);
     if (!parts.length) return null;
-    const name = parts.pop();
+    const name = internalName(parts.pop());
     const parent = this.resolve('/' + parts.join('/'));
     if (parent === null) return null;
     const entries = this._readEntries(parent);
@@ -236,7 +243,7 @@ class FileSystem {
     if (existing) return parents && existing.type === 'd' ? null : 'exists';
     const parts = path.split('/').filter(Boolean);
     if (!parts.length) return 'exists';
-    const name = parts.pop();
+    const name = internalName(parts.pop());
     if (name.length > 8) return 'name too long';
     const parentPath = '/' + parts.join('/');
     let parent = this.resolve(parentPath);
@@ -255,7 +262,7 @@ class FileSystem {
   writeFile(path, text) {
     const parts = path.split('/').filter(Boolean);
     if (!parts.length) return 'invalid path';
-    const name = parts.pop();
+    const name = internalName(parts.pop());
     if (name.length > 8) return 'name too long';
     const parent = this.resolve('/' + parts.join('/'));
     if (parent === null) return 'no such directory';
@@ -319,7 +326,7 @@ class FileSystem {
 
     const tParts = target.split('/').filter(Boolean);
     if (!tParts.length) return 'invalid path';
-    const tName = tParts.pop();
+    const tName = internalName(tParts.pop());
     if (tName.length > 8) return 'name too long';
     const tParent = this.resolve('/' + tParts.join('/'));
     if (tParent === null) return 'no such directory';
@@ -327,7 +334,7 @@ class FileSystem {
     if (tStat && tStat.type === 'd') return 'is a directory';
 
     const sParts = src.split('/').filter(Boolean);
-    const sName = sParts.pop();
+    const sName = internalName(sParts.pop());
     const sParent = this.resolve('/' + sParts.join('/'));
 
     if (sParent === tParent && !tStat) {

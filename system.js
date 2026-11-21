@@ -42,9 +42,34 @@ if (installer.readByte(PROGRAM_SECTOR, 0) !== ECHO_PROGRAM[0]) {
 
 const fs = new FileSystem(installer);
 if (!fs.isFormatted()) fs.format();
+// 兼容旧镜像：确保 /home 与历史文件存在（不重建其他数据）
+if (fs.resolve('/home') === null) fs.mkdir('/home');
+if (fs.stat('/home/.bash_history') === null) fs.writeFile('/home/.bash_history', '');
 
 const cpu = new Intel4004();
 cpu.attachDisk(IMG_PATH);
+
+// 命令历史持久化到镜像内的 /home/.bash_history
+const HISTORY_PATH = '/home/.bash_history';
+const HISTORY_MAX_BYTES = 240; // 单个文件扇区 256 字节，留 0 结尾空间
+const commandHistory = loadHistory();
+
+function loadHistory() {
+  const text = fs.readFile(HISTORY_PATH);
+  return text === null ? [] : text.split('\n').filter(l => l.length);
+}
+
+function appendHistory(cmd) {
+  const line = cmd.trim();
+  if (!line) return;
+  commandHistory.push(line);
+  let text = commandHistory.join('\n') + '\n';
+  while (text.length > HISTORY_MAX_BYTES && commandHistory.length > 1) {
+    commandHistory.shift();
+    text = commandHistory.join('\n') + '\n';
+  }
+  fs.writeFile(HISTORY_PATH, text);
+}
 
 function programFromImage() {
   const bytes = [];
@@ -568,6 +593,7 @@ const HELP_TEXT = [
   '    # comment                 comment runs to end of line',
   '    Shift+PgUp / Shift+PgDn   scroll back / forward (VNC)',
   '    screensaver [-h] [file] CRT screensaver, top-down; -h = horizontal (VNC)',
+  '    Up / Down                 command history (saved in /home/.bash_history)',
   '',
   '  <required>  [optional]  ...  one or more'
 ].join('\n');
@@ -729,8 +755,7 @@ if (VNC) {
   let inputBuf = '';
   let drawnLen = 0; // 当前行已绘制的输入长度（不含提示符）
   let cursorPos = 0; // 输入行内光标位置
-  const history = [];
-  let histIdx = 0;
+  let histIdx = commandHistory.length;
   let editor = null; // nano 实例，非 null 时接管所有按键
   let screensaver = null; // 屏保实例，非 null 时接管帧缓冲
 
@@ -763,7 +788,7 @@ if (VNC) {
     const cmd = inputBuf;
     fb.write('\n');
     inputBuf = '';
-    if (cmd.trim()) { history.push(cmd); histIdx = history.length; }
+    if (cmd.trim()) { appendHistory(cmd); histIdx = commandHistory.length; }
     drawnLen = 0;
     cursorPos = 0;
     const keep = handle(cmd);
@@ -863,9 +888,9 @@ if (VNC) {
     if (key === 'Home') { cursorPos = 0; redrawInput(); return; }
     if (key === 'End') { cursorPos = inputBuf.length; redrawInput(); return; }
     if (key === 'ArrowUp' || key === 'ArrowDown') {
-      if (!history.length) return;
-      histIdx = Math.max(0, Math.min(history.length, histIdx + (key === 'ArrowUp' ? -1 : 1)));
-      inputBuf = history[histIdx] || '';
+      if (!commandHistory.length) return;
+      histIdx = Math.max(0, Math.min(commandHistory.length, histIdx + (key === 'ArrowUp' ? -1 : 1)));
+      inputBuf = commandHistory[histIdx] || '';
       cursorPos = inputBuf.length;
       redrawInput();
       return;
@@ -1024,9 +1049,11 @@ if (VNC) {
   };
 
   out(BANNER);
+  rl.history.push(...commandHistory); // 加载持久化历史到 readline
   rl.setPrompt(`4004${cwd}> `);
   rl.prompt();
   rl.on('line', (line) => {
+    appendHistory(line);
     const keep = handle(line);
     if (keep === false) { rl.close(); return; }
     if (!enteredEditor) rl.prompt();
