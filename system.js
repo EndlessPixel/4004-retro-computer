@@ -12,6 +12,7 @@ const { Framebuffer } = require('./framebuffer');
 const { Nano } = require('./nano');
 const { SoundCard } = require('./sound');
 const { Shell } = require('./shell');
+const { Screensaver } = require('./screensaver');
 
 const IMG_PATH = process.env.IMG_PATH || path.join(__dirname, 'disk.img');
 const PROGRAM_SECTOR = 1;
@@ -21,6 +22,7 @@ const fb = VNC ? new Framebuffer(new Font()) : null;
 const sound = new SoundCard();
 let frameDirty = true;
 let playSound = null; // 由前端/终端层注入的发声函数
+let launchScreensaver = null; // 由前端/终端层注入的屏保启动函数
 
 function out(text) {
   if (VNC) { fb.write(text); frameDirty = true; }
@@ -565,6 +567,7 @@ const HELP_TEXT = [
   '    true  false  test <expr>  [ <expr> ]',
   '    # comment                 comment runs to end of line',
   '    Shift+PgUp / Shift+PgDn   scroll back / forward (VNC)',
+  '    screensaver [file]      start CRT screensaver (VNC)',
   '',
   '  <required>  [optional]  ...  one or more'
 ].join('\n');
@@ -597,6 +600,13 @@ function dispatch(ctx, argv) {
   }
   if (name === 'help') return { code: 0, output: HELP_TEXT + '\n' };
   if (name === 'clear') return { code: 0, output: '\x1b[2J\x1b[H' };
+  if (name === 'screensaver' || name === 'scr') {
+    const { operands } = parseArgs(rest, '');
+    const file = operands[0] ? normalizePath(operands[0]) : null;
+    if (launchScreensaver) { enteredEditor = true; launchScreensaver(file); }
+    else return { code: 1, output: 'screensaver: not available in this mode\n' };
+    return { code: 0, output: '' };
+  }
   if (name === 'nano') {
     const { operands, error } = parseArgs(rest, '');
     if (error) return { code: 1, output: `nano: ${error}\n` };
@@ -717,6 +727,7 @@ if (VNC) {
   const history = [];
   let histIdx = 0;
   let editor = null; // nano 实例，非 null 时接管所有按键
+  let screensaver = null; // 屏保实例，非 null 时接管帧缓冲
 
   function promptStr() { return `4004${cwd}> `; }
 
@@ -773,7 +784,37 @@ if (VNC) {
   }
   launchEditor = startEditor;
 
+  function renderScreensaver() {
+    fb.setCells(screensaver.render());
+    fb.goto(fb.cols - 1, fb.rows - 1);
+    frameDirty = true;
+  }
+
+  launchScreensaver = (file) => {
+    try {
+      screensaver = file
+        ? new Screensaver(fb.cols, fb.rows, file)
+        : new Screensaver(fb.cols, fb.rows);
+    } catch (e) {
+      screensaver = null;
+      enteredEditor = false;
+      fb.write(`screensaver: ${e.message}\n`);
+      frameDirty = true;
+      return;
+    }
+    renderScreensaver();
+    broadcast();
+  };
+
   function onKey(key) {
+    if (screensaver) {
+      screensaver = null;
+      enteredEditor = false;
+      fb.clear();
+      fb.write(promptStr());
+      frameDirty = true;
+      return;
+    }
     if (editor) {
       const result = editor.onKey(key);
       if (result.exit) {
@@ -895,6 +936,12 @@ if (VNC) {
   fb.write(BANNER + promptStr());
   server.listen(15900, () => console.log('VNC terminal on http://localhost:15900'));
   setInterval(() => {
+    if (screensaver) {
+      screensaver.step();
+      renderScreensaver();
+      broadcast();
+      return;
+    }
     fb.cursorOn = !fb.cursorOn;
     frameDirty = true;
     if (frameDirty) broadcast();
