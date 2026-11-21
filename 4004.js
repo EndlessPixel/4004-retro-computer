@@ -2,11 +2,14 @@ const path = require('path');
 const fs = require('fs');
 const { Memory } = require('./memory');
 const { Disk } = require('./disk');
+const { Terminal } = require('./terminal');
 
 class Intel4004 {
   constructor() {
     this.memory = new Memory();
     this.disk = new Disk();
+    this.terminal = new Terminal();
+    this.ioDevice = 'disk';
     this.diskSector = 0;
     this.diskOffset = 0;
     this.reg = new Uint8Array(16);
@@ -34,6 +37,10 @@ class Intel4004 {
 
   attachDisk(imgPath) {
     this.disk.open(imgPath);
+  }
+
+  selectDevice(name) {
+    this.ioDevice = name;
   }
 
   reset() {
@@ -160,7 +167,8 @@ class Intel4004 {
               this.memory.writeRam(this.reg[0] & 0xf, this.A & 0xf);
               break;
             case 0x1: // WRR
-              this._diskWriteNibble(this.A);
+              if (this.ioDevice === 'terminal') this.terminal.writeNibble(this.A);
+              else this._diskWriteNibble(this.A);
               break;
             case 0x2: // WPM
               break;
@@ -183,7 +191,9 @@ class Intel4004 {
               this.A = this.memory.readRam(this.reg[0] & 0xf) & 0xf;
               break;
             case 0x9: // RDR
-              this.A = this._diskReadNibble();
+              this.A = (this.ioDevice === 'terminal')
+                ? this.terminal.readNibble()
+                : this._diskReadNibble();
               break;
             case 0xA: // ADM
               {
@@ -351,6 +361,8 @@ class Intel4004 {
   }
 }
 
+if (require.main === module) {
+
 // 测试 JUN 0xF12 (0x3F,0x12)，目标地址放 HLT
 const cpu = new Intel4004();
 const rom = new Uint8Array(0xF13);
@@ -409,3 +421,7 @@ cpu5.loadRom(new Uint8Array([0xF9, 0xFF])); // RDR, HLT
 while (!cpu5.stop) cpu5.stepInst();
 console.log("===== 硬盘读回验证 =====");
 console.log("RDR 读到的 A:", cpu5.A.toString(16));
+
+}
+
+module.exports = { Intel4004 };
