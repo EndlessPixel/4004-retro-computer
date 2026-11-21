@@ -9,6 +9,8 @@ function tokenize(line) {
     while (i < line.length && /\s/.test(line[i])) i++;
     if (i >= line.length) break;
     const c = line[i];
+    // 注释：词首的 # 忽略到行尾（引号内的 # 在 word 循环里处理，不在此处）
+    if (c === '#') break;
     if (c === '{' || c === '}') { tokens.push(c); i++; continue; }
     if (isOp(c)) {
       if (c === '|' && line[i + 1] === '|') { tokens.push('||'); i += 2; continue; }

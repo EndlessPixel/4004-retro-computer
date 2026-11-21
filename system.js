@@ -563,6 +563,7 @@ const HELP_TEXT = [
   '    while cmd; do ...; done',
   '    cmd > file / >> file / < file   redirection',
   '    true  false  test <expr>  [ <expr> ]',
+  '    # comment                 comment runs to end of line',
   '',
   '  <required>  [optional]  ...  one or more'
 ].join('\n');
