@@ -602,7 +602,7 @@ function dispatch(ctx, argv) {
   if (name === 'clear') return { code: 0, output: '\x1b[2J\x1b[H' };
   if (name === 'screensaver' || name === 'scr') {
     const { operands } = parseArgs(rest, '');
-    const file = operands[0] ? normalizePath(operands[0]) : null;
+    const file = operands[0] || null;
     if (launchScreensaver) { enteredEditor = true; launchScreensaver(file); }
     else return { code: 1, output: 'screensaver: not available in this mode\n' };
     return { code: 0, output: '' };
