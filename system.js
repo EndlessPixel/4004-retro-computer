@@ -1,5 +1,7 @@
 const path = require('path');
 const nodeFs = require('fs');
+const os = require('os');
+const { execFileSync } = require('child_process');
 const http = require('http');
 const readline = require('readline');
 const { Intel4004 } = require('./4004');
@@ -8,13 +10,16 @@ const { FileSystem } = require('./fs');
 const { Font } = require('./font');
 const { Framebuffer } = require('./framebuffer');
 const { Nano } = require('./nano');
+const { SoundCard } = require('./sound');
 
 const IMG_PATH = process.env.IMG_PATH || path.join(__dirname, 'disk.img');
 const PROGRAM_SECTOR = 1;
 const VNC = process.argv.includes('-vnc');
 
 const fb = VNC ? new Framebuffer(new Font()) : null;
+const sound = new SoundCard();
 let frameDirty = true;
+let playSound = null; // 由前端/终端层注入的发声函数
 
 function out(text) {
   if (VNC) { fb.write(text); frameDirty = true; }
@@ -245,6 +250,20 @@ function readLines(path) {
   return lines;
 }
 
+function cmdBeep(arg) {
+  const { operands } = parseArgs(arg, '');
+  const freq = operands[0] ? parseFloat(operands[0]) : 440;
+  const ms = operands[1] ? parseFloat(operands[1]) : 200;
+  const wave = operands[2] || 'square';
+  if (isNaN(freq) || freq <= 0) return `beep: invalid frequency '${operands[0]}'`;
+  if (isNaN(ms) || ms <= 0) return `beep: invalid duration '${operands[1]}'`;
+  if (!['square', 'sine', 'triangle'].includes(wave)) return `beep: unknown waveform '${wave}'`;
+  if (!sound.enabled) return 'beep: sound card disabled';
+  const data = sound.tone(freq, Math.min(ms, 5000), wave);
+  if (playSound) playSound(data, sound.sampleRate);
+  return null;
+}
+
 function cmdSleep(arg) {
   const { operands } = parseArgs(arg, '');
   if (!operands.length) return 'sleep: missing operand';
@@ -459,7 +478,7 @@ function handle(line) {
     return false;
   }
   if (cmd === 'help') {
-    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | nano [file] | touch <file> | stat <file> | find [path] | tree [path] | du [path] | head [-n N] <file> | tail [-n N] <file> | wc [-lwc] <file> | grep [-iv] <pat> <file> | sort [-r] <file> | sleep <sec> | hexdump <file> | strings [-n N] <file> | df | free | clear | exit\n');
+    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | nano [file] | touch <file> | stat <file> | find [path] | tree [path] | du [path] | head [-n N] <file> | tail [-n N] <file> | wc [-lwc] <file> | grep [-iv] <pat> <file> | sort [-r] <file> | sleep <sec> | beep [freq] [ms] [wave] | hexdump <file> | strings [-n N] <file> | df | free | clear | exit\n');
   } else if (cmd === 'clear') {
     out('\x1b[2J\x1b[H');
   } else if (cmd === 'echo') {
@@ -516,6 +535,9 @@ function handle(line) {
   } else if (cmd === 'sleep' || cmd.startsWith('sleep ')) {
     const err = cmdSleep(cmd.slice(5));
     if (err) printViaCpu(err);
+  } else if (cmd === 'beep' || cmd.startsWith('beep ')) {
+    const err = cmdBeep(cmd.slice(4));
+    if (err) printViaCpu(err);
   } else if (cmd === 'hexdump' || cmd.startsWith('hexdump ')) {
     printViaCpu(cmdHexdump(cmd.slice(7)));
   } else if (cmd === 'strings' || cmd.startsWith('strings ')) {
@@ -534,6 +556,7 @@ const BANNER = '4004 system - programs and filesystem in disk.img\n';
 
 if (VNC) {
   const clients = new Set();
+  const soundClients = new Set();
   let inputBuf = '';
   let drawnLen = 0; // 当前行已绘制的输入长度（不含提示符）
   let cursorPos = 0; // 输入行内光标位置
@@ -544,10 +567,17 @@ if (VNC) {
   function promptStr() { return `4004${cwd}> `; }
 
   function broadcast() {
-    const payload = `data: ${JSON.stringify(fb.frame())}\n\n`;
+    const frame = fb.frame();
+    frame.sound = sound.status();
+    const payload = `data: ${JSON.stringify(frame)}\n\n`;
     for (const res of clients) res.write(payload);
     frameDirty = false;
   }
+
+  playSound = (data, rate) => {
+    const payload = `data: ${JSON.stringify({ pcm: Buffer.from(data).toString('base64'), rate })}\n\n`;
+    for (const res of soundClients) res.write(payload);
+  };
 
   function redrawInput() {
     const prompt = promptStr();
@@ -655,8 +685,20 @@ if (VNC) {
         'Connection': 'keep-alive'
       });
       clients.add(res);
-      res.write(`data: ${JSON.stringify(fb.frame())}\n\n`);
+      const frame = fb.frame();
+      frame.sound = sound.status();
+      res.write(`data: ${JSON.stringify(frame)}\n\n`);
       req.on('close', () => clients.delete(res));
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/sound') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      soundClients.add(res);
+      req.on('close', () => soundClients.delete(res));
       return;
     }
     if (req.method === 'POST' && pathname === '/key') {
@@ -684,6 +726,37 @@ if (VNC) {
 } else {
   rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   let cliEditor = null;
+
+  // CLI 发声：生成 WAV 临时文件交给系统播放器；纯 tty 无音频则静默提示
+  const PLAYERS = [
+    ['aplay', ['-q']],
+    ['paplay', []],
+    ['afplay', []]
+  ];
+  function findPlayer() {
+    for (const [bin, args] of PLAYERS) {
+      try { execFileSync('which', [bin], { stdio: 'ignore' }); return { bin, args }; }
+      catch (e) { /* not found */ }
+    }
+    return null;
+  }
+  playSound = (data, rate) => {
+    const player = findPlayer();
+    if (!player) return; // 纯 tty 无音频设备，保持静默
+    const header = Buffer.alloc(44);
+    header.write('RIFF', 0); header.writeUInt32LE(36 + data.length, 4); header.write('WAVE', 8);
+    header.write('fmt ', 12); header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(1, 22); header.writeUInt32LE(rate, 24); header.writeUInt32LE(rate, 28);
+    header.writeUInt16LE(1, 32); header.writeUInt16LE(8, 34);
+    header.write('data', 36); header.writeUInt32LE(data.length, 40);
+    const wav = Buffer.concat([header, Buffer.from(data)]);
+    const tmp = path.join(os.tmpdir(), `beep-${process.pid}.wav`);
+    try {
+      nodeFs.writeFileSync(tmp, wav);
+      execFileSync(player.bin, [...player.args, tmp], { stdio: 'ignore', timeout: 10000 });
+    } catch (e) { /* 播放失败则静默 */ }
+    finally { try { nodeFs.unlinkSync(tmp); } catch (e) { /* ignore */ } }
+  };
 
   const KEYMAP = {
     enter: 'Enter', backspace: 'Backspace', delete: 'Delete',

@@ -18,8 +18,12 @@
                inset 0 -1vmin 3vmin rgba(0,0,0,.85), 0 0 5vmin #000;
   }
   .label {
-    position:absolute; right:3.5vmin; bottom:.5vmin;
+    position:absolute; left:3.5vmin; bottom:.5vmin;
     font-size:1.25vmin; letter-spacing:.28em; color:#777166; text-transform:uppercase;
+  }
+  #sound-status {
+    position:absolute; right:3.5vmin; bottom:.5vmin;
+    font-size:1.2vmin; letter-spacing:.1em; color:#6bbf7a; white-space:pre;
   }
   .screen {
     position:relative; width:100%; height:100%; overflow:hidden; cursor:text;
@@ -53,6 +57,7 @@
     <canvas id="screen-canvas" width="640" height="200" tabindex="0"></canvas>
   </div>
   <div class="label">intel 4004 · terminal</div>
+  <div id="sound-status">SND: 8bit 8kHz --</div>
 </div>
 <script>
   const canvas = document.getElementById('screen-canvas');
@@ -120,12 +125,42 @@
     requestAnimationFrame(frame);
   }
 
+  // 声卡：Web Audio 播放 8-bit unsigned PCM，并在机壳上显示硬件状态
+  const soundStatus = document.getElementById('sound-status');
+  let audioCtx = null;
+  function playPcm(pcm, rate) {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const bytes = Uint8Array.from(atob(pcm), c => c.charCodeAt(0));
+      const buf = audioCtx.createBuffer(1, bytes.length, rate);
+      const ch = buf.getChannelData(0);
+      for (let i = 0; i < bytes.length; i++) ch[i] = (bytes[i] - 128) / 128;
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(audioCtx.destination);
+      src.start();
+    } catch (err) { console.error(err); }
+  }
+  const soundSource = new EventSource('/sound');
+  soundSource.onmessage = (e) => {
+    try {
+      const s = JSON.parse(e.data);
+      playPcm(s.pcm, s.rate);
+    } catch (err) { console.error(err); }
+  };
+
   const source = new EventSource('/events');
   source.onmessage = (e) => {
     try {
       const f = JSON.parse(e.data);
       if (f.width !== W || f.height !== H) resize(f.width, f.height);
       target = Uint8Array.from(atob(f.pixels), c => c.charCodeAt(0));
+      if (f.sound) {
+        const s = f.sound;
+        soundStatus.textContent = `SND: ${s.bits}bit ${s.rate}Hz vol${s.volume} ` +
+          `${s.enabled ? s.lastFreq + 'Hz' : 'OFF'} plays${s.plays}`;
+      }
     } catch (err) { console.error(err); }
   };
 
@@ -136,7 +171,10 @@
   };
   // 让页面拿到键盘焦点，否则 IDE 内嵌浏览器里按键会被外层拦截
   canvas.focus();
-  canvas.addEventListener('click', () => canvas.focus());
+  canvas.addEventListener('click', () => {
+    canvas.focus();
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  });
 
   document.addEventListener('keydown', (e) => {
     let key = null;
