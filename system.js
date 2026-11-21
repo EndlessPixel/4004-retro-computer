@@ -224,6 +224,7 @@ const BANNER = '4004 system - programs and filesystem in disk.img\n';
 if (VNC) {
   const clients = new Set();
   let inputBuf = '';
+  let drawnLen = 0; // 当前行已绘制的输入长度（不含提示符）
   const history = [];
   let histIdx = 0;
 
@@ -236,7 +237,10 @@ if (VNC) {
   }
 
   function redrawInput() {
-    fb.write('\r' + ' '.repeat(Math.min(inputBuf.length, fb.cols - 1)) + '\r' + inputBuf);
+    const prompt = promptStr();
+    const clearLen = Math.min(prompt.length + Math.max(drawnLen, inputBuf.length), fb.cols - 1);
+    fb.write('\r' + ' '.repeat(clearLen) + '\r' + prompt + inputBuf);
+    drawnLen = inputBuf.length;
     frameDirty = true;
   }
 
@@ -245,6 +249,7 @@ if (VNC) {
     fb.write('\n');
     inputBuf = '';
     if (cmd.trim()) { history.push(cmd); histIdx = history.length; }
+    drawnLen = 0;
     const keep = handle(cmd);
     if (!keep) fb.write('[session closed]\n');
     else fb.write(promptStr());
@@ -256,6 +261,7 @@ if (VNC) {
     if (key === 'Backspace') {
       if (inputBuf.length) {
         inputBuf = inputBuf.slice(0, -1);
+        drawnLen = inputBuf.length;
         fb.write('\b \b');
         frameDirty = true;
       }
@@ -270,6 +276,7 @@ if (VNC) {
     }
     if (key.length === 1 && key.charCodeAt(0) >= 32 && key.charCodeAt(0) <= 126) {
       inputBuf += key;
+      drawnLen = inputBuf.length;
       fb.write(key);
       frameDirty = true;
     }
