@@ -237,6 +237,52 @@ function cmdMv(arg) {
   return errors.join('\n') || null;
 }
 
+function cmdFind(arg) {
+  const { operands } = parseArgs(arg, '');
+  const start = operands.length ? normalizePath(operands[0]) : '.';
+  const target = normalizePath(start);
+  if (fs.stat(target) === null) return `find: '${operands[0] || start}': No such file or directory`;
+  const nodes = fs.walk(target);
+  const lines = [target];
+  for (const n of nodes) lines.push(n.path);
+  return lines.join('\n');
+}
+
+function cmdTree(arg) {
+  const { operands } = parseArgs(arg, '');
+  const target = normalizePath(operands[0] || '.');
+  if (fs.stat(target) === null) return `tree: '${operands[0] || '.'}': No such directory`;
+  const lines = [target === '/' ? '/' : target.split('/').pop()];
+  const nodes = fs.walk(target);
+  let dirs = 0, files = 0;
+  for (const n of nodes) {
+    const last = n.depth === 0;
+    lines.push('    '.repeat(n.depth) + (last ? '' : '|-- ') + n.entry.name + (n.entry.type === 'd' ? '/' : ''));
+    if (n.entry.type === 'd') dirs++; else files++;
+  }
+  lines.push('');
+  lines.push(`${dirs} directories, ${files} files`);
+  return lines.join('\n');
+}
+
+function cmdDu(arg) {
+  const { operands } = parseArgs(arg, '');
+  const target = normalizePath(operands[0] || '.');
+  if (fs.stat(target) === null) return `du: '${operands[0] || '.'}': No such directory`;
+  const nodes = fs.walk(target);
+  let total = 0;
+  const lines = [];
+  for (const n of nodes) {
+    if (n.entry.type === 'f') {
+      const size = fs.fileSize(n.path);
+      total += size;
+      lines.push(`${String(size).padStart(5)}  ${n.path}`);
+    }
+  }
+  lines.push(`${String(total).padStart(5)}  ${target}`);
+  return lines.join('\n');
+}
+
 function fmtTime(t) {
   if (!t) return 'Jan  1 00:00';
   const d = new Date(t * 1000);
@@ -303,7 +349,7 @@ function handle(line) {
     return false;
   }
   if (cmd === 'help') {
-    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | nano [file] | touch <file> | stat <file> | df | free | clear | exit\n');
+    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | nano [file] | touch <file> | stat <file> | find [path] | tree [path] | du [path] | df | free | clear | exit\n');
   } else if (cmd === 'clear') {
     out('\x1b[2J\x1b[H');
   } else if (cmd === 'echo') {
@@ -341,6 +387,12 @@ function handle(line) {
     if (err) printViaCpu(err);
   } else if (cmd === 'stat' || cmd.startsWith('stat ')) {
     printViaCpu(cmdStat(cmd.slice(4)));
+  } else if (cmd === 'find' || cmd.startsWith('find ')) {
+    printViaCpu(cmdFind(cmd.slice(4)));
+  } else if (cmd === 'tree' || cmd.startsWith('tree ')) {
+    printViaCpu(cmdTree(cmd.slice(4)));
+  } else if (cmd === 'du' || cmd.startsWith('du ')) {
+    printViaCpu(cmdDu(cmd.slice(2)));
   } else if (cmd === 'df') {
     printViaCpu(cmdDf());
   } else if (cmd === 'free') {

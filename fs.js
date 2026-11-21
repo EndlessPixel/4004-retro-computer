@@ -106,6 +106,22 @@ class FileSystem {
     return String.fromCharCode(...bytes);
   }
 
+  // 递归遍历，返回 [{ path, entry, depth }]，不含起点本身
+  walk(path = '/') {
+    const out = [];
+    const visit = (p, sector, depth) => {
+      for (const e of this._readEntries(sector)) {
+        const child = (p === '/' ? '' : p) + '/' + e.name;
+        out.push({ path: child, entry: e, depth });
+        if (e.type === 'd') visit(child, e.sector, depth + 1);
+      }
+    };
+    const sector = this.resolve(path);
+    if (sector === null) return null;
+    visit(path, sector, 0);
+    return out;
+  }
+
   now() { return Math.floor(Date.now() / 1000); }
 
   fileSize(path) {
