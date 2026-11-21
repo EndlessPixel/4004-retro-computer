@@ -112,6 +112,8 @@ function handle(line) {
   } else if (cmd === 'cd' || cmd.startsWith('cd ')) {
     const err = cmdCd(cmd.slice(2).trim());
     if (err) printViaCpu(err);
+  } else if (cmd === 'pwd') {
+    printViaCpu(cwd);
   } else {
     console.log(`unknown command: ${cmd.split(/\s+/)[0]}`);
   }
