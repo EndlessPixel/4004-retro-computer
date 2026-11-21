@@ -1,11 +1,25 @@
 const path = require('path');
+const nodeFs = require('fs');
+const http = require('http');
 const readline = require('readline');
 const { Intel4004 } = require('./4004');
 const { Disk } = require('./disk');
 const { FileSystem } = require('./fs');
+const { Font } = require('./font');
+const { Framebuffer } = require('./framebuffer');
 
 const IMG_PATH = path.join(__dirname, 'disk.img');
 const PROGRAM_SECTOR = 1;
+const VNC = process.argv.includes('-vnc');
+
+const FONT_PATH = '/usr/share/consolefonts/Lat15-VGA8.psf.gz';
+const fb = VNC ? new Framebuffer(new Font(FONT_PATH)) : null;
+let frameDirty = true;
+
+function out(text) {
+  if (VNC) { fb.write(text); frameDirty = true; }
+  else process.stdout.write(text);
+}
 
 // echo 程序（存于 img 扇区 1）：
 //   RDM / XCH 1 / INC 0 / loop: RDM / WRR / INC 0 / ISZ 1,loop / HLT
@@ -54,14 +68,15 @@ function printViaCpu(text) {
   for (const line of text.split('\n')) {
     if (line) {
       for (let i = 0; i < line.length; i += 7) {
-        process.stdout.write(runEcho(line.slice(i, i + 7)));
+        out(runEcho(line.slice(i, i + 7)));
       }
     }
-    process.stdout.write('\n');
+    out('\n');
   }
 }
 
 let cwd = '/';
+let rl = null;
 
 function normalizePath(target) {
   if (!target || target === '~') return '/home';
@@ -88,23 +103,31 @@ function cmdCd(arg) {
   const target = normalizePath(arg);
   if (fs.resolve(target) === null) return `cd: ${target}: no such directory`;
   cwd = target;
-  rl.setPrompt(`4004${cwd}> `);
+  if (rl) rl.setPrompt(`4004${cwd}> `);
   return null;
 }
 
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+function cmdCat(arg) {
+  if (!arg) return 'cat: missing file operand';
+  const target = normalizePath(arg);
+  const content = fs.readFile(target);
+  if (content === null) return `cat: ${target}: no such file`;
+  return content.replace(/[^\x20-\x7e\n]/g, '.');
+}
 
 function handle(line) {
   const cmd = line.trim();
-  if (!cmd) return;
+  if (!cmd) return true;
   if (cmd === 'exit' || cmd === 'quit') {
-    rl.close();
+    if (rl) rl.close();
     return false;
   }
   if (cmd === 'help') {
-    console.log('commands: echo <text> | ls [path] | cd [path] | pwd | exit');
+    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | clear | exit\n');
+  } else if (cmd === 'clear') {
+    out('\x1b[2J\x1b[H');
   } else if (cmd === 'echo') {
-    console.log('');
+    out('\n');
   } else if (cmd.startsWith('echo ')) {
     printViaCpu(cmd.slice(5));
   } else if (cmd === 'ls' || cmd.startsWith('ls ')) {
@@ -114,16 +137,117 @@ function handle(line) {
     if (err) printViaCpu(err);
   } else if (cmd === 'pwd') {
     printViaCpu(cwd);
+  } else if (cmd === 'cat' || cmd.startsWith('cat ')) {
+    printViaCpu(cmdCat(cmd.slice(3).trim()));
   } else {
-    console.log(`unknown command: ${cmd.split(/\s+/)[0]}`);
+    out(`unknown command: ${cmd.split(/\s+/)[0]}\n`);
   }
   return true;
 }
 
-console.log('4004 system - programs and filesystem in disk.img');
-rl.setPrompt(`4004${cwd}> `);
-rl.prompt();
-rl.on('line', (line) => {
-  if (handle(line) !== false) rl.prompt();
-});
-rl.on('close', () => process.stdout.write('\n'));
+const BANNER = '4004 system - programs and filesystem in disk.img\n';
+
+if (VNC) {
+  const clients = new Set();
+  let inputBuf = '';
+  const history = [];
+  let histIdx = 0;
+
+  function promptStr() { return `4004${cwd}> `; }
+
+  function broadcast() {
+    const payload = `data: ${JSON.stringify(fb.frame())}\n\n`;
+    for (const res of clients) res.write(payload);
+    frameDirty = false;
+  }
+
+  function redrawInput() {
+    fb.write('\r' + ' '.repeat(Math.min(inputBuf.length, fb.cols - 1)) + '\r' + inputBuf);
+    frameDirty = true;
+  }
+
+  function submitLine() {
+    const cmd = inputBuf;
+    fb.write('\n');
+    inputBuf = '';
+    if (cmd.trim()) { history.push(cmd); histIdx = history.length; }
+    const keep = handle(cmd);
+    if (!keep) fb.write('[session closed]\n');
+    else fb.write(promptStr());
+    frameDirty = true;
+  }
+
+  function onKey(key) {
+    if (key === 'Enter') { submitLine(); return; }
+    if (key === 'Backspace') {
+      if (inputBuf.length) {
+        inputBuf = inputBuf.slice(0, -1);
+        fb.write('\b \b');
+        frameDirty = true;
+      }
+      return;
+    }
+    if (key === 'ArrowUp' || key === 'ArrowDown') {
+      if (!history.length) return;
+      histIdx = Math.max(0, Math.min(history.length, histIdx + (key === 'ArrowUp' ? -1 : 1)));
+      inputBuf = history[histIdx] || '';
+      redrawInput();
+      return;
+    }
+    if (key.length === 1 && key.charCodeAt(0) >= 32 && key.charCodeAt(0) <= 126) {
+      inputBuf += key;
+      fb.write(key);
+      frameDirty = true;
+    }
+  }
+
+  const server = http.createServer((req, res) => {
+    const pathname = req.url.split('?')[0];
+    if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(nodeFs.readFileSync(path.join(__dirname, 'crt.html')));
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/events') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      clients.add(res);
+      res.write(`data: ${JSON.stringify(fb.frame())}\n\n`);
+      req.on('close', () => clients.delete(res));
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/key') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        try { onKey(JSON.parse(body).key || ''); } catch (e) { /* ignore */ }
+        res.writeHead(204);
+        res.end();
+        if (frameDirty) broadcast();
+      });
+      return;
+    }
+    res.writeHead(404);
+    res.end('not found');
+  });
+
+  fb.write(BANNER + promptStr());
+  server.listen(15900, () => console.log('VNC terminal on http://localhost:15900'));
+  setInterval(() => {
+    fb.cursorOn = !fb.cursorOn;
+    frameDirty = true;
+    if (frameDirty) broadcast();
+  }, 530);
+} else {
+  rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  out(BANNER);
+  rl.setPrompt(`4004${cwd}> `);
+  rl.prompt();
+  rl.on('line', (line) => {
+    if (handle(line) !== false) rl.prompt();
+  });
+  rl.on('close', () => out('\n'));
+}

@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Intel 4004 - CRT Terminal</title>
+<style>
+  * { box-sizing:border-box; }
+  html,body {
+    margin:0; height:100%; background:#080808; overflow:hidden;
+    font-family:"Courier New",Courier,monospace; user-select:none;
+  }
+  .case {
+    position:absolute; inset:2.5vmin; padding:2.4vmin;
+    border-radius:5vmin;
+    background:linear-gradient(150deg,#3a3934 0%,#1c1b18 45%,#0d0d0c 100%);
+    box-shadow:inset 0 0 2vmin rgba(255,255,255,.06),
+               inset 0 -1vmin 3vmin rgba(0,0,0,.85), 0 0 5vmin #000;
+  }
+  .label {
+    position:absolute; right:3.5vmin; bottom:.5vmin;
+    font-size:1.25vmin; letter-spacing:.28em; color:#777166; text-transform:uppercase;
+  }
+  .screen {
+    position:relative; width:100%; height:100%; overflow:hidden; cursor:text;
+    border-radius:3.6vmin;
+    background:#010301;
+    box-shadow:inset 0 0 5vmin rgba(0,0,0,.95), inset 0 0 1vmin rgba(80,255,130,.10);
+    animation:boot .9s ease-out;
+  }
+  /* 玻璃反光和暗角，纯粹的视觉外壳 */
+  .screen::after {
+    content:""; position:absolute; inset:0; z-index:5; pointer-events:none;
+    background:radial-gradient(ellipse at 28% 16%,rgba(190,255,210,.07),transparent 48%),
+               radial-gradient(ellipse at 50% 50%,transparent 55%,rgba(0,0,0,.45) 100%);
+  }
+  #screen-canvas {
+    position:absolute; inset:3vmin 3.5vmin; z-index:2;
+    width:calc(100% - 7vmin); height:calc(100% - 6vmin);
+    image-rendering:pixelated; image-rendering:crisp-edges;
+    filter:drop-shadow(0 0 .3vmin rgba(90,255,130,.5)) blur(.02vmin);
+  }
+  @keyframes boot {
+    0%   { transform:scaleY(.004); filter:brightness(4); }
+    35%  { transform:scaleY(.004); filter:brightness(3); }
+    100% { transform:scaleY(1);    filter:brightness(1); }
+  }
+</style>
+</head>
+<body>
+<div class="case">
+  <div class="screen">
+    <canvas id="screen-canvas" width="640" height="200"></canvas>
+  </div>
+  <div class="label">intel 4004 · terminal</div>
+</div>
+<script>
+  const canvas = document.getElementById('screen-canvas');
+  const ctx = canvas.getContext('2d', { alpha:false });
+
+  let W = 640, H = 200, STRIDE = 80;
+  let target = new Uint8Array(STRIDE * H);   // 后端推来的目标像素
+  let phosphor = new Float32Array(W * H);     // 每个磷光点的亮度，随时间衰减
+  let beam = 0;                               // 电子束当前像素位置
+
+  // 电子束速度：每帧轰击的像素数。一整屏 128000 点，约 40 帧扫完
+  const BEAM_SPEED = 3200;
+  // 磷光余辉：每帧衰减系数，越小余辉越短、扫描束越明显
+  const DECAY = 0.978;
+
+  const img = ctx.createImageData(W, H);
+  const data = img.data;
+
+  function resize(w, h) {
+    W = w; H = h; STRIDE = w / 8;
+    canvas.width = W; canvas.height = H;
+    phosphor = new Float32Array(W * H);
+    target = new Uint8Array(STRIDE * H);
+    beam = 0;
+  }
+
+  function onTarget(x, y) {
+    return (target[y * STRIDE + (x >> 3)] & (0x80 >> (x & 7))) !== 0;
+  }
+
+  function frame() {
+    // 余辉衰减：所有磷光点亮度按指数衰减
+    for (let i = 0; i < phosphor.length; i++) phosphor[i] *= DECAY;
+
+    // 电子束按光栅从左到右、从上到下逐点轰击
+    for (let n = 0; n < BEAM_SPEED; n++) {
+      const x = beam % W;
+      const y = (beam / W) | 0;
+      // 目标点亮则充到最亮；否则该点本帧不被轰击
+      if (onTarget(x, y)) phosphor[beam] = 1.0;
+      beam = (beam + 1) % phosphor.length;
+    }
+
+    // 磷光亮度 -> 像素颜色
+    for (let i = 0, o = 0; i < phosphor.length; i++, o += 4) {
+      const v = phosphor[i];
+      data[o]     = 3 + (v * 136) | 0;
+      data[o + 1] = 10 + (v * 245) | 0;
+      data[o + 2] = 6 + (v * 158) | 0;
+      data[o + 3] = 255;
+    }
+
+    // 电子束落点：一个高亮白点，是"正在轰击"的位置
+    const bx = beam % W, by = (beam / W) | 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const x = bx + dx, y = by + dy;
+        if (x < 0 || x >= W || y < 0 || y >= H) continue;
+        const o = (y * W + x) * 4;
+        data[o] = 200; data[o + 1] = 255; data[o + 2] = 210;
+      }
+    }
+
+    ctx.putImageData(img, 0, 0);
+    requestAnimationFrame(frame);
+  }
+
+  const source = new EventSource('/events');
+  source.onmessage = (e) => {
+    try {
+      const f = JSON.parse(e.data);
+      if (f.width !== W || f.height !== H) resize(f.width, f.height);
+      target = Uint8Array.from(atob(f.pixels), c => c.charCodeAt(0));
+    } catch (err) { console.error(err); }
+  };
+
+  const special = {
+    Enter:'Enter', Backspace:'Backspace', ArrowUp:'ArrowUp', ArrowDown:'ArrowDown'
+  };
+  document.addEventListener('keydown', (e) => {
+    const key = special[e.key] || (e.key.length === 1 ? e.key : null);
+    if (key) {
+      fetch('/key', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({key})
+      });
+      e.preventDefault();
+    }
+  });
+
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>

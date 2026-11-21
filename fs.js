@@ -3,6 +3,7 @@ const ENTRY_SIZE = 16;
 const ROOT_SECTOR = 2;
 const HOME_SECTOR = 3;
 const USER_SECTOR = 4;
+const FORMAT_VERSION = 2;
 
 class FileSystem {
   constructor(disk) {
@@ -10,11 +11,11 @@ class FileSystem {
   }
 
   isFormatted() {
-    return this.disk.readByte(ROOT_SECTOR, 255) === 0xA5;
+    return this.disk.readByte(ROOT_SECTOR, 255) === FORMAT_VERSION;
   }
 
   format() {
-    for (const s of [ROOT_SECTOR, HOME_SECTOR, USER_SECTOR]) {
+    for (let s = 2; s < 16; s++) {
       for (let i = 0; i < 256; i++) this.disk.writeByte(s, i, 0);
     }
     this._writeEntry(ROOT_SECTOR, 0, 'home', 'd', HOME_SECTOR);
@@ -22,7 +23,14 @@ class FileSystem {
     this._writeEntry(ROOT_SECTOR, 2, 'README', 'f', 5);
     this._writeEntry(HOME_SECTOR, 0, 'user', 'd', USER_SECTOR);
     this._writeEntry(HOME_SECTOR, 1, 'notes', 'f', 6);
-    this.disk.writeByte(ROOT_SECTOR, 255, 0xA5);
+    this._writeFile(5, '4004 SYSTEM\nTYPE HELP FOR COMMANDS\n');
+    this._writeFile(6, 'HELLO FROM HOME\n');
+    this.disk.writeByte(ROOT_SECTOR, 255, FORMAT_VERSION);
+  }
+
+  _writeFile(sector, text) {
+    for (let i = 0; i < text.length; i++) this.disk.writeByte(sector, i, text.charCodeAt(i) & 0xff);
+    this.disk.writeByte(sector, text.length, 0);
   }
 
   _writeEntry(sector, index, name, type, dataSector) {
@@ -69,6 +77,23 @@ class FileSystem {
     const sector = this.resolve(path);
     if (sector === null) return null;
     return this._readEntries(sector);
+  }
+
+  readFile(path) {
+    const parts = path.split('/').filter(Boolean);
+    if (!parts.length) return null;
+    const name = parts.pop();
+    const dirSector = this.resolve('/' + parts.join('/'));
+    if (dirSector === null) return null;
+    const entry = this._readEntries(dirSector).find(e => e.name === name && e.type === 'f');
+    if (!entry) return null;
+    const bytes = [];
+    for (let i = 0; i < 256; i++) {
+      const b = this.disk.readByte(entry.sector, i);
+      if (b === 0) break;
+      bytes.push(b);
+    }
+    return String.fromCharCode(...bytes);
   }
 }
 
