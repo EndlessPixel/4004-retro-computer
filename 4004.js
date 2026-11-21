@@ -313,12 +313,19 @@ class Intel4004 {
   }
 }
 
-// 测试 JUN 0xF12 (0x3F,0x12)，后面放HLT
+// 测试 JUN 0xF12 (0x3F,0x12)，目标地址放 HLT
 const cpu = new Intel4004();
-cpu.loadRom([0x3F, 0x12, 0xFF]);
+const rom = new Uint8Array(0xF13);
+rom[0] = 0x3F;
+rom[1] = 0x12;
+rom[0xF12] = 0xFF;
+cpu.loadRom(rom);
+
 console.log("===== JUN 时序逐tick =====");
-for (let i = 0; i < 30; i++) {
+for (let i = 0; i < 30 && !cpu.stop; i++) {
   cpu.tick();
   const d = cpu.dump();
   console.log(`cycle ${d.cycle} | T${d.T} | mc=${d.mcycle}/${d.maxMcycle} | addr:${d.addr} bus:${d.bus.toString(16)} op:${d.opcode} buf:${d.operandBuf}`);
 }
+console.log("===== 停机状态 =====");
+console.log(cpu.dump());
