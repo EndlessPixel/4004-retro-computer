@@ -11,6 +11,7 @@ const { Font } = require('./font');
 const { Framebuffer } = require('./framebuffer');
 const { Nano } = require('./nano');
 const { SoundCard } = require('./sound');
+const { Shell } = require('./shell');
 
 const IMG_PATH = process.env.IMG_PATH || path.join(__dirname, 'disk.img');
 const PROGRAM_SECTOR = 1;
@@ -513,128 +514,195 @@ function cmdFree() {
   ].join('\n');
 }
 
+const HELP_TEXT = [
+  '4004 shell - available commands',
+  '',
+  '  FILE SYSTEM',
+  '    ls [path]              list directory (default: .)',
+  '    cd [path]              change directory (default: /home)',
+  '    pwd                    print working directory',
+  '    cat <file>...          print file contents',
+  '    touch <file>...        create files / update mtime',
+  '    stat <file>...         show file metadata',
+  '    mkdir [-p] <dir>...    create directories',
+  '    rm [-rf] <file>...     remove files ( -r: dirs, -f: force )',
+  '    cp <src>... <dst>      copy files to file/directory',
+  '    mv <src>... <dst>      move/rename files',
+  '    find [path]            list all descendants',
+  '    tree [path]            print directory tree',
+  '    du [path]              disk usage by file',
+  '    df                     filesystem free space',
+  '    free                   RAM usage',
+  '',
+  '  TEXT',
+  '    nano [file]            fullscreen editor',
+  '    echo <text>            print text (supports \\n \\t \\xHH)',
+  '    head [-n N] <file>     first N lines (default 10)',
+  '    tail [-n N] <file>     last N lines (default 10)',
+  '    wc [-lwc] <file>...    count lines / words / bytes',
+  '    grep [-iv] <pat> <file>   search lines ( -i: ignore case, -v: invert )',
+  '    sort [-r] <file>       sort lines ( -r: reverse )',
+  '    hexdump <file>         hex + ASCII dump',
+  '    strings [-n N] <file>  printable strings (default N=4)',
+  '',
+  '  SOUND / MISC',
+  '    beep [-f Hz] [-l ms] [-r n] [-d ms] [-n wave] [-v vol]',
+  '                           play tone (wave: square|sine|triangle)',
+  '    sleep <sec>            wait for N seconds',
+  '    clear                  clear screen',
+  '    help                   show this help',
+  '    exit                   leave the shell',
+  '',
+  '  SHELL',
+  '    cmd1 | cmd2            pipe stdout to stdin',
+  '    a && b / a || b        conditional execution',
+  '    a ; b                  sequence',
+  '    VAR=value  $VAR  $?    variables',
+  '    for v in a b; do ...; done',
+  '    if cmd; then ...; else ...; fi',
+  '    while cmd; do ...; done',
+  '    cmd > file / >> file / < file   redirection',
+  '    true  false  test <expr>  [ <expr> ]',
+  '',
+  '  <required>  [optional]  ...  one or more'
+].join('\n');
+
+// 把 stdin 写入隐藏文件，供下游命令通过 - 读取
+const PIPE_FILE = '/.pipe';
+function feedStdin(input) {
+  fs.writeFile(PIPE_FILE, input === undefined ? '' : input);
+}
+
+// 命令分发：返回 { code, output }
+function dispatch(ctx, argv) {
+  const name = argv[0];
+  const rest = argv.slice(1).join(' ');
+
+  if (name === 'true') return { code: 0, output: '' };
+  if (name === 'false') return { code: 1, output: '' };
+  if (name === ':') return { code: 0, output: '' };
+  if (name === 'test' || name === '[') return testCommand(argv.slice(1));
+  if (name === 'write') {
+    const file = argv[1];
+    const append = argv[argv.length - 1] === 'append';
+    const content = argv.slice(2, append ? -1 : undefined).join(' ');
+    const prev = append && fs.stat(normalizePath(file)) ? fs.readFile(normalizePath(file)) : '';
+    const err = fs.writeFile(normalizePath(file), prev + content);
+    return err ? { code: 1, output: `${file}: ${err}\n` } : { code: 0, output: '' };
+  }
+  if (name === 'exit' || name === 'quit') {
+    return { code: 0, output: '', exit: true };
+  }
+  if (name === 'help') return { code: 0, output: HELP_TEXT + '\n' };
+  if (name === 'clear') return { code: 0, output: '\x1b[2J\x1b[H' };
+  if (name === 'nano') {
+    const { operands, error } = parseArgs(rest, '');
+    if (error) return { code: 1, output: `nano: ${error}\n` };
+    if (launchEditor) { enteredEditor = true; launchEditor(operands[0] || ''); }
+    else return { code: 1, output: 'nano: not available in this mode\n' };
+    return { code: 0, output: '' };
+  }
+
+  // 管道输入：把 - 参数替换为隐藏文件；文本过滤器缺文件参数时自动补上
+  const stdin = ctx.stdin;
+  const hasInput = stdin !== undefined && stdin !== '';
+  if (hasInput) feedStdin(stdin);
+  let argv2 = rest.trim().split(/\s+/).filter(Boolean).map(s => hasInput && s === '-' ? PIPE_FILE : s);
+  if (hasInput && ['grep', 'sort', 'wc', 'head', 'tail', 'hexdump', 'strings', 'cat'].includes(name)) {
+    // 数非选项参数（跳过 -x 和数字选项值）
+    const optionNames = { wc: ['-l', '-w', '-c'], grep: ['-i', '-v'], sort: ['-r'], head: [], tail: [] };
+    const opts = optionNames[name] || [];
+    const nonOpts = argv2.filter((s, i) => {
+      if (opts.includes(s)) return false;
+      if ((name === 'head' || name === 'tail') && (s === '-n' || /^\d+$/.test(s))) return false;
+      if (name === 'strings' && /^\d+$/.test(s) && argv2[i - 1] === '-n') return false;
+      return true;
+    });
+    const need = name === 'grep' ? 2 : 1;
+    if (nonOpts.length < need) argv2.push(PIPE_FILE);
+  }
+  const arg = argv2.join(' ');
+
+  let output = null;
+  switch (name) {
+    case 'echo': output = arg ? unescape(arg) + '\n' : '\n'; break;
+    case 'ls': output = cmdLs(arg.trim()) + '\n'; break;
+    case 'cd': { const e = cmdCd(arg.trim()); if (e) return { code: 1, output: e + '\n' }; break; }
+    case 'pwd': output = cwd + '\n'; break;
+    case 'cat': output = cmdCat(arg.trim()); break;
+    case 'mkdir': { const e = cmdMkdir(arg); if (e) return { code: 1, output: e + '\n' }; break; }
+    case 'rm': { const e = cmdRm(arg); if (e) return { code: 1, output: e + '\n' }; break; }
+    case 'cp': { const e = cmdCp(arg); if (e) return { code: 1, output: e + '\n' }; break; }
+    case 'mv': { const e = cmdMv(arg); if (e) return { code: 1, output: e + '\n' }; break; }
+    case 'touch': { const e = cmdTouch(arg); if (e) return { code: 1, output: e + '\n' }; break; }
+    case 'stat': output = cmdStat(arg.trim()) + '\n'; break;
+    case 'find': output = cmdFind(arg.trim()) + '\n'; break;
+    case 'tree': output = cmdTree(arg.trim()) + '\n'; break;
+    case 'du': output = cmdDu(arg.trim()) + '\n'; break;
+    case 'head': output = cmdHeadTail(arg.trim(), false) + '\n'; break;
+    case 'tail': output = cmdHeadTail(arg.trim(), true) + '\n'; break;
+    case 'wc': output = cmdWc(arg.trim()) + '\n'; break;
+    case 'grep': output = cmdGrep(arg.trim()) + '\n'; break;
+    case 'sort': output = cmdSort(arg.trim()) + '\n'; break;
+    case 'hexdump': output = cmdHexdump(arg.trim()) + '\n'; break;
+    case 'strings': output = cmdStrings(arg.trim()) + '\n'; break;
+    case 'sleep': { const e = cmdSleep(arg.trim()); if (e) return { code: 1, output: e + '\n' }; break; }
+    case 'beep': { const e = cmdBeep(arg.trim()); if (e) return { code: 1, output: e + '\n' }; break; }
+    case 'df': output = cmdDf() + '\n'; break;
+    case 'free': output = cmdFree() + '\n'; break;
+    default: return { code: 127, output: `${name}: command not found\n` };
+  }
+  if (output === null) output = '';
+  if (hasInput) output = output.split(PIPE_FILE).join('-');
+  const isErr = /^(ls|cd|cat|mkdir|rm|cp|mv|touch|stat|find|tree|du|head|tail|wc|grep|sort|hexdump|strings|sleep|beep):/.test(output);
+  return { code: isErr ? 1 : 0, output };
+}
+
+// test / [ 内建
+function testCommand(args) {
+  if (args[0] === '[' && args[args.length - 1] === ']') args = args.slice(1, -1);
+  if (!args.length) return { code: 1, output: '' };
+  if (args[0] === '-n' && args[1] !== undefined) return { code: args[1].length > 0 ? 0 : 1, output: '' };
+  if (args[0] === '-z' && args[1] !== undefined) return { code: args[1].length === 0 ? 0 : 1, output: '' };
+  if (args.length >= 3 && ['=', '==', '!=', '-eq', '-ne', '-lt', '-le', '-gt', '-ge'].includes(args[1])) {
+    const a = args[0], b = args[2], op = args[1];
+    let ok = false;
+    if (op === '=' || op === '==') ok = a === b;
+    else if (op === '!=') ok = a !== b;
+    else {
+      const na = Number(a), nb = Number(b);
+      if (op === '-eq') ok = na === nb;
+      else if (op === '-ne') ok = na !== nb;
+      else if (op === '-lt') ok = na < nb;
+      else if (op === '-le') ok = na <= nb;
+      else if (op === '-gt') ok = na > nb;
+      else if (op === '-ge') ok = na >= nb;
+    }
+    return { code: ok ? 0 : 1, output: '' };
+  }
+  // 单参数：非空即真；-f/-d 检查文件
+  if (args[0] === '-f' && args[1]) {
+    const st = fs.stat(normalizePath(args[1]));
+    return { code: st && st.type === 'f' ? 0 : 1, output: '' };
+  }
+  if (args[0] === '-d' && args[1]) {
+    const st = fs.stat(normalizePath(args[1]));
+    return { code: st && st.type === 'd' ? 0 : 1, output: '' };
+  }
+  return { code: args[0] && Number(args[0]) !== 0 ? 0 : 1, output: '' };
+}
+
+const shell = new Shell(dispatch);
+
 function handle(line) {
   const cmd = line.trim();
   if (!cmd) return true;
-  if (cmd === 'exit' || cmd === 'quit') {
-    if (rl) rl.close();
-    return false;
-  }
-  if (cmd === 'help') {
-    const help = [
-      '4004 shell - available commands',
-      '',
-      '  FILE SYSTEM',
-      '    ls [path]              list directory (default: .)',
-      '    cd [path]              change directory (default: /home)',
-      '    pwd                    print working directory',
-      '    cat <file>...          print file contents',
-      '    touch <file>...        create files / update mtime',
-      '    stat <file>...         show file metadata',
-      '    mkdir [-p] <dir>...    create directories',
-      '    rm [-rf] <file>...     remove files ( -r: dirs, -f: force )',
-      '    cp <src>... <dst>      copy files to file/directory',
-      '    mv <src>... <dst>      move/rename files',
-      '    find [path]            list all descendants',
-      '    tree [path]            print directory tree',
-      '    du [path]              disk usage by file',
-      '    df                     filesystem free space',
-      '    free                   RAM usage',
-      '',
-      '  TEXT',
-      '    nano [file]            fullscreen editor',
-      '    echo <text>            print text (supports \\n \\t \\xHH)',
-      '    head [-n N] <file>     first N lines (default 10)',
-      '    tail [-n N] <file>     last N lines (default 10)',
-      '    wc [-lwc] <file>...    count lines / words / bytes',
-      '    grep [-iv] <pat> <file>   search lines ( -i: ignore case, -v: invert )',
-      '    sort [-r] <file>       sort lines ( -r: reverse )',
-      '    hexdump <file>         hex + ASCII dump',
-      '    strings [-n N] <file>  printable strings (default N=4)',
-      '',
-      '  SOUND / MISC',
-      '    beep [-f Hz] [-l ms] [-r n] [-d ms] [-n wave] [-v vol]',
-      '                           play tone (wave: square|sine|triangle)',
-      '    sleep <sec>            wait for N seconds',
-      '    clear                  clear screen',
-      '    help                   show this help',
-      '    exit                   leave the shell',
-      '',
-      '  <required>  [optional]  ...  one or more'
-    ];
-    printViaCpu(help.join('\n'));
-  } else if (cmd === 'clear') {
-    out('\x1b[2J\x1b[H');
-  } else if (cmd === 'echo') {
-    out('\n');
-  } else if (cmd.startsWith('echo ')) {
-    printViaCpu(unescape(cmd.slice(5)));
-  } else if (cmd === 'ls' || cmd.startsWith('ls ')) {
-    printViaCpu(cmdLs(cmd.slice(2).trim()));
-  } else if (cmd === 'cd' || cmd.startsWith('cd ')) {
-    const err = cmdCd(cmd.slice(2).trim());
-    if (err) printViaCpu(err);
-  } else if (cmd === 'pwd') {
-    printViaCpu(cwd);
-  } else if (cmd === 'cat' || cmd.startsWith('cat ')) {
-    printViaCpu(cmdCat(cmd.slice(3).trim()));
-  } else if (cmd === 'mkdir' || cmd.startsWith('mkdir ')) {
-    const err = cmdMkdir(cmd.slice(5));
-    if (err) printViaCpu(err);
-  } else if (cmd === 'rm' || cmd.startsWith('rm ')) {
-    const err = cmdRm(cmd.slice(2));
-    if (err) printViaCpu(err);
-  } else if (cmd === 'cp' || cmd.startsWith('cp ')) {
-    const err = cmdCp(cmd.slice(2));
-    if (err) printViaCpu(err);
-  } else if (cmd === 'mv' || cmd.startsWith('mv ')) {
-    const err = cmdMv(cmd.slice(2));
-    if (err) printViaCpu(err);
-  } else if (cmd === 'nano' || cmd.startsWith('nano ')) {
-    const { operands, error } = parseArgs(cmd.slice(4), '');
-    if (error) out(`nano: ${error}\n`);
-    else if (launchEditor) { enteredEditor = true; launchEditor(operands[0] || ''); }
-    else out('nano: not available in this mode\n');
-  } else if (cmd === 'touch' || cmd.startsWith('touch ')) {
-    const err = cmdTouch(cmd.slice(5));
-    if (err) printViaCpu(err);
-  } else if (cmd === 'stat' || cmd.startsWith('stat ')) {
-    printViaCpu(cmdStat(cmd.slice(4)));
-  } else if (cmd === 'find' || cmd.startsWith('find ')) {
-    printViaCpu(cmdFind(cmd.slice(4)));
-  } else if (cmd === 'tree' || cmd.startsWith('tree ')) {
-    printViaCpu(cmdTree(cmd.slice(4)));
-  } else if (cmd === 'du' || cmd.startsWith('du ')) {
-    printViaCpu(cmdDu(cmd.slice(2)));
-  } else if (cmd === 'head' || cmd.startsWith('head ')) {
-    printViaCpu(cmdHeadTail(cmd.slice(4), false));
-  } else if (cmd === 'tail' || cmd.startsWith('tail ')) {
-    printViaCpu(cmdHeadTail(cmd.slice(4), true));
-  } else if (cmd === 'wc' || cmd.startsWith('wc ')) {
-    printViaCpu(cmdWc(cmd.slice(2)));
-  } else if (cmd === 'grep' || cmd.startsWith('grep ')) {
-    printViaCpu(cmdGrep(cmd.slice(4)));
-  } else if (cmd === 'sort' || cmd.startsWith('sort ')) {
-    printViaCpu(cmdSort(cmd.slice(4)));
-  } else if (cmd === 'sleep' || cmd.startsWith('sleep ')) {
-    const err = cmdSleep(cmd.slice(5));
-    if (err) printViaCpu(err);
-  } else if (cmd === 'beep' || cmd.startsWith('beep ')) {
-    const err = cmdBeep(cmd.slice(4));
-    if (err) printViaCpu(err);
-  } else if (cmd === 'hexdump' || cmd.startsWith('hexdump ')) {
-    printViaCpu(cmdHexdump(cmd.slice(7)));
-  } else if (cmd === 'strings' || cmd.startsWith('strings ')) {
-    printViaCpu(cmdStrings(cmd.slice(7)));
-  } else if (cmd === 'df') {
-    printViaCpu(cmdDf());
-  } else if (cmd === 'free') {
-    printViaCpu(cmdFree());
-  } else {
-    out(`unknown command: ${cmd.split(/\s+/)[0]}\n`);
-  }
+  const result = shell.run(cmd, {});
+  if (result.output) out(result.output);
+  if (result.exit) return false;
   return true;
 }
+
 
 const BANNER = '4004 system - programs and filesystem in disk.img\n';
 
@@ -884,7 +952,8 @@ if (VNC) {
   rl.prompt();
   rl.on('line', (line) => {
     const keep = handle(line);
-    if (keep !== false && !enteredEditor) rl.prompt();
+    if (keep === false) { rl.close(); return; }
+    if (!enteredEditor) rl.prompt();
     enteredEditor = false;
   });
   rl.on('close', () => out('\n'));
