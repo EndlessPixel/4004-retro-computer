@@ -237,6 +237,71 @@ function cmdMv(arg) {
   return errors.join('\n') || null;
 }
 
+function readLines(path) {
+  const content = fs.readFile(path);
+  if (content === null) return null;
+  const lines = content.split('\n');
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
+function cmdHeadTail(arg, tail) {
+  const name = tail ? 'tail' : 'head';
+  let count = 10;
+  let rest = arg.trim();
+  const mn = rest.match(/^-n\s*(\d+)\s*/);
+  if (mn) { count = parseInt(mn[1], 10); rest = rest.slice(mn[0].length); }
+  else {
+    const md = rest.match(/^-(\d+)\s*/);
+    if (md) { count = parseInt(md[1], 10); rest = rest.slice(md[0].length); }
+  }
+  const file = rest.split(/\s+/)[0];
+  if (!file) return `${name}: missing file operand`;
+  const lines = readLines(normalizePath(file));
+  if (lines === null) return `${name}: cannot open '${file}'`;
+  return (tail ? lines.slice(-count) : lines.slice(0, count)).join('\n');
+}
+
+function cmdWc(arg) {
+  const { opts, operands } = parseArgs(arg, 'lwc');
+  if (!operands.length) return 'wc: missing file operand';
+  const lines = [];
+  for (const name of operands) {
+    const content = fs.readFile(normalizePath(name));
+    if (content === null) return `wc: ${name}: No such file`;
+    const ls = readLines(normalizePath(name));
+    const nLines = ls.length;
+    const nWords = content.trim() ? content.trim().split(/\s+/).length : 0;
+    const nBytes = content.length;
+    const cols = [];
+    if (opts.size === 0 || opts.has('l')) cols.push(String(nLines).padStart(6));
+    if (opts.size === 0 || opts.has('w')) cols.push(String(nWords).padStart(6));
+    if (opts.size === 0 || opts.has('c')) cols.push(String(nBytes).padStart(6));
+    lines.push(cols.join(' ') + ' ' + name);
+  }
+  return lines.join('\n');
+}
+
+function cmdGrep(arg) {
+  const { opts, operands } = parseArgs(arg, 'iv');
+  if (operands.length < 2) return 'grep: missing pattern or file';
+  const pattern = operands[0];
+  const lines = readLines(normalizePath(operands[1]));
+  if (lines === null) return `grep: ${operands[1]}: No such file`;
+  const re = new RegExp(pattern, opts.has('i') ? 'i' : '');
+  return lines.filter(l => re.test(l) !== opts.has('v')).join('\n');
+}
+
+function cmdSort(arg) {
+  const { opts, operands } = parseArgs(arg, 'r');
+  if (!operands.length) return 'sort: missing file operand';
+  const lines = readLines(normalizePath(operands[0]));
+  if (lines === null) return `sort: ${operands[0]}: No such file`;
+  lines.sort();
+  if (opts.has('r')) lines.reverse();
+  return lines.join('\n');
+}
+
 function cmdFind(arg) {
   const { operands } = parseArgs(arg, '');
   const start = operands.length ? normalizePath(operands[0]) : '.';
@@ -349,7 +414,7 @@ function handle(line) {
     return false;
   }
   if (cmd === 'help') {
-    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | nano [file] | touch <file> | stat <file> | find [path] | tree [path] | du [path] | df | free | clear | exit\n');
+    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | nano [file] | touch <file> | stat <file> | find [path] | tree [path] | du [path] | head [-n N] <file> | tail [-n N] <file> | wc [-lwc] <file> | grep [-iv] <pat> <file> | sort [-r] <file> | df | free | clear | exit\n');
   } else if (cmd === 'clear') {
     out('\x1b[2J\x1b[H');
   } else if (cmd === 'echo') {
@@ -393,6 +458,16 @@ function handle(line) {
     printViaCpu(cmdTree(cmd.slice(4)));
   } else if (cmd === 'du' || cmd.startsWith('du ')) {
     printViaCpu(cmdDu(cmd.slice(2)));
+  } else if (cmd === 'head' || cmd.startsWith('head ')) {
+    printViaCpu(cmdHeadTail(cmd.slice(4), false));
+  } else if (cmd === 'tail' || cmd.startsWith('tail ')) {
+    printViaCpu(cmdHeadTail(cmd.slice(4), true));
+  } else if (cmd === 'wc' || cmd.startsWith('wc ')) {
+    printViaCpu(cmdWc(cmd.slice(2)));
+  } else if (cmd === 'grep' || cmd.startsWith('grep ')) {
+    printViaCpu(cmdGrep(cmd.slice(4)));
+  } else if (cmd === 'sort' || cmd.startsWith('sort ')) {
+    printViaCpu(cmdSort(cmd.slice(4)));
   } else if (cmd === 'df') {
     printViaCpu(cmdDf());
   } else if (cmd === 'free') {
