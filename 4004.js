@@ -1,8 +1,14 @@
+const path = require('path');
+const fs = require('fs');
 const { Memory } = require('./memory');
+const { Disk } = require('./disk');
 
 class Intel4004 {
   constructor() {
     this.memory = new Memory();
+    this.disk = new Disk();
+    this.diskSector = 0;
+    this.diskOffset = 0;
     this.reg = new Uint8Array(16);
     this.A = 0;
     this.C = 0;
@@ -26,6 +32,10 @@ class Intel4004 {
     this.reset();
   }
 
+  attachDisk(imgPath) {
+    this.disk.open(imgPath);
+  }
+
   reset() {
     this.PC = 0;
     this.A = 0;
@@ -33,6 +43,8 @@ class Intel4004 {
     this.reg.fill(0);
     this.stop = false;
     this.memory.resetSelection();
+    this.diskSector = 0;
+    this.diskOffset = 0;
 
     this.T = 0;
     this.cycle = 0;
@@ -43,6 +55,31 @@ class Intel4004 {
     this.operandBuf = [];
     this.bus = 0;
     this.addr = 0;
+  }
+
+  _diskSync() {
+    if (this.reg[0] !== this.diskSector) {
+      this.diskSector = this.reg[0] & 0xf;
+      this.diskOffset = 0;
+    }
+  }
+
+  _diskWriteNibble(nibble) {
+    this._diskSync();
+    const byteOff = this.diskOffset >> 1;
+    let v = this.disk.readByte(this.diskSector, byteOff);
+    if (this.diskOffset & 1) v = (v & 0xf0) | (nibble & 0x0f);
+    else v = (v & 0x0f) | ((nibble & 0x0f) << 4);
+    this.disk.writeByte(this.diskSector, byteOff, v);
+    this.diskOffset += 1;
+  }
+
+  _diskReadNibble() {
+    this._diskSync();
+    const v = this.disk.readByte(this.diskSector, this.diskOffset >> 1);
+    const nibble = (this.diskOffset & 1) ? (v & 0x0f) : (v >> 4);
+    this.diskOffset += 1;
+    return nibble;
   }
 
   _getInstMcycles(opcode) {
@@ -123,6 +160,7 @@ class Intel4004 {
               this.memory.writeRam(this.reg[0] & 0xf, this.A & 0xf);
               break;
             case 0x1: // WRR
+              this._diskWriteNibble(this.A);
               break;
             case 0x2: // WPM
               break;
@@ -145,6 +183,7 @@ class Intel4004 {
               this.A = this.memory.readRam(this.reg[0] & 0xf) & 0xf;
               break;
             case 0x9: // RDR
+              this.A = this._diskReadNibble();
               break;
             case 0xA: // ADM
               {
@@ -169,6 +208,7 @@ class Intel4004 {
             case 0xE: // OR5
               break;
             case 0xF: // HLT
+              this.disk.flush();
               this.stop = true;
               break;
           }
@@ -347,3 +387,25 @@ cpu3.loadRom(rom3);
 while (!cpu3.stop) cpu3.stepInst();
 console.log("===== RAM 读写验证 =====");
 console.log(cpu3.dump());
+
+// 验证硬盘：WRR 把 0xA、0xB 两个半字节写成字节 0xAB 存入扇区 0
+const imgPath = path.join(__dirname, 'disk.img');
+const cpu4 = new Intel4004();
+cpu4.attachDisk(imgPath);
+cpu4.loadRom(new Uint8Array([0xCA, 0xF1, 0xCB, 0xF1, 0xFF])); // LDM A, WRR, LDM B, WRR, HLT
+while (!cpu4.stop) cpu4.stepInst();
+console.log("===== 硬盘写入验证 =====");
+console.log("缓存中扇区0字节0:", cpu4.disk.readByte(0, 0).toString(16));
+console.log(".img 文件字节0:", fs.readFileSync(imgPath)[0].toString(16));
+
+// 重新打开 .img，验证持久化后 RDR 能读回高半字节 0xA
+const disk2 = new Disk();
+disk2.open(imgPath);
+console.log("重新加载 .img 字节0:", disk2.readByte(0, 0).toString(16));
+
+const cpu5 = new Intel4004();
+cpu5.attachDisk(imgPath);
+cpu5.loadRom(new Uint8Array([0xF9, 0xFF])); // RDR, HLT
+while (!cpu5.stop) cpu5.stepInst();
+console.log("===== 硬盘读回验证 =====");
+console.log("RDR 读到的 A:", cpu5.A.toString(16));
