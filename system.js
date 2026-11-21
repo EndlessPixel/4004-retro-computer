@@ -144,7 +144,7 @@ function cmdCd(arg) {
 
 function cmdCat(arg) {
   const { operands } = parseArgs(arg, '');
-  if (!operands.length) return 'cat: missing file operand';
+  if (!operands.length) return usage('cat', 'cat <file>...');
   let result = '';
   for (const name of operands) {
     const content = fs.readFile(normalizePath(name));
@@ -160,6 +160,8 @@ const FS_ERR = {
   'is a directory': 'Is a directory'
 };
 const fsErr = e => FS_ERR[e] || e.charAt(0).toUpperCase() + e.slice(1);
+
+const usage = (name, syntax) => `${name}: missing operand\nusage: ${syntax}`;
 
 // 仿 getopt：解析出选项集合与位置参数，-- 之后一律当位置参数
 function parseArgs(s, allowed) {
@@ -185,7 +187,7 @@ function parseArgs(s, allowed) {
 function cmdMkdir(arg) {
   const { opts, operands, error } = parseArgs(arg, 'p');
   if (error) return `mkdir: ${error}`;
-  if (!operands.length) return 'mkdir: missing operand';
+  if (!operands.length) return usage('mkdir', 'mkdir [-p] <dir>...');
   const errors = [];
   for (const name of operands) {
     const err = fs.mkdir(normalizePath(name), opts.has('p'));
@@ -197,7 +199,7 @@ function cmdMkdir(arg) {
 function cmdRm(arg) {
   const { opts, operands, error } = parseArgs(arg, 'rfR');
   if (error) return `rm: ${error}`;
-  if (!operands.length) return 'rm: missing operand';
+  if (!operands.length) return usage('rm', 'rm [-rf] <file>...');
   const recursive = opts.has('r') || opts.has('R');
   const force = opts.has('f');
   const errors = [];
@@ -211,7 +213,7 @@ function cmdRm(arg) {
 function cmdCp(arg) {
   const { operands, error } = parseArgs(arg, '');
   if (error) return `cp: ${error}`;
-  if (operands.length < 2) return 'cp: missing destination file operand';
+  if (operands.length < 2) return usage('cp', 'cp <src>... <dst>');
   const dst = normalizePath(operands[operands.length - 1]);
   const dstStat = fs.stat(dst);
   if (operands.length > 2 && (!dstStat || dstStat.type !== 'd')) {
@@ -228,7 +230,7 @@ function cmdCp(arg) {
 function cmdMv(arg) {
   const { operands, error } = parseArgs(arg, '');
   if (error) return `mv: ${error}`;
-  if (operands.length < 2) return 'mv: missing destination file operand';
+  if (operands.length < 2) return usage('mv', 'mv <src>... <dst>');
   const dst = normalizePath(operands[operands.length - 1]);
   const dstStat = fs.stat(dst);
   if (operands.length > 2 && (!dstStat || dstStat.type !== 'd')) {
@@ -307,7 +309,7 @@ function cmdBeep(arg) {
 
 function cmdSleep(arg) {
   const { operands } = parseArgs(arg, '');
-  if (!operands.length) return 'sleep: missing operand';
+  if (!operands.length) return usage('sleep', 'sleep <sec>');
   const sec = parseFloat(operands[0]);
   if (isNaN(sec) || sec < 0) return `sleep: invalid time interval '${operands[0]}'`;
   const ms = Math.min(sec * 1000, 5000);
@@ -317,7 +319,7 @@ function cmdSleep(arg) {
 
 function cmdHexdump(arg) {
   const { operands } = parseArgs(arg, '');
-  if (!operands.length) return 'hexdump: missing file operand';
+  if (!operands.length) return usage('hexdump', 'hexdump <file>');
   const bytes = fs.readBytes(normalizePath(operands[0]));
   if (bytes === null) return `hexdump: ${operands[0]}: No such file`;
   const lines = [];
@@ -337,7 +339,7 @@ function cmdStrings(arg) {
   const m = arg.match(/(?:^|\s)-n\s*(\d+)/);
   if (m) min = parseInt(m[1], 10);
   const file = operands[operands.length - 1];
-  if (!file) return 'strings: missing file operand';
+  if (!file) return usage('strings', 'strings [-n N] <file>');
   const bytes = fs.readBytes(normalizePath(file));
   if (bytes === null) return `strings: ${file}: No such file`;
   const out = [];
@@ -361,7 +363,7 @@ function cmdHeadTail(arg, tail) {
     if (md) { count = parseInt(md[1], 10); rest = rest.slice(md[0].length); }
   }
   const file = rest.split(/\s+/)[0];
-  if (!file) return `${name}: missing file operand`;
+  if (!file) return usage(name, `${name} [-n N] <file>`);
   const lines = readLines(normalizePath(file));
   if (lines === null) return `${name}: cannot open '${file}'`;
   return (tail ? lines.slice(-count) : lines.slice(0, count)).join('\n');
@@ -369,7 +371,7 @@ function cmdHeadTail(arg, tail) {
 
 function cmdWc(arg) {
   const { opts, operands } = parseArgs(arg, 'lwc');
-  if (!operands.length) return 'wc: missing file operand';
+  if (!operands.length) return usage('wc', 'wc [-lwc] <file>...');
   const lines = [];
   for (const name of operands) {
     const content = fs.readFile(normalizePath(name));
@@ -389,7 +391,7 @@ function cmdWc(arg) {
 
 function cmdGrep(arg) {
   const { opts, operands } = parseArgs(arg, 'iv');
-  if (operands.length < 2) return 'grep: missing pattern or file';
+  if (operands.length < 2) return usage('grep', 'grep [-iv] <pat> <file>');
   const pattern = operands[0];
   const lines = readLines(normalizePath(operands[1]));
   if (lines === null) return `grep: ${operands[1]}: No such file`;
@@ -399,7 +401,7 @@ function cmdGrep(arg) {
 
 function cmdSort(arg) {
   const { opts, operands } = parseArgs(arg, 'r');
-  if (!operands.length) return 'sort: missing file operand';
+  if (!operands.length) return usage('sort', 'sort [-r] <file>');
   const lines = readLines(normalizePath(operands[0]));
   if (lines === null) return `sort: ${operands[0]}: No such file`;
   lines.sort();
@@ -463,7 +465,7 @@ function fmtTime(t) {
 
 function cmdTouch(arg) {
   const { operands } = parseArgs(arg, '');
-  if (!operands.length) return 'touch: missing file operand';
+  if (!operands.length) return usage('touch', 'touch <file>...');
   const errors = [];
   for (const name of operands) {
     const err = fs.touch(normalizePath(name));
@@ -474,7 +476,7 @@ function cmdTouch(arg) {
 
 function cmdStat(arg) {
   const { operands } = parseArgs(arg, '');
-  if (!operands.length) return 'stat: missing operand';
+  if (!operands.length) return usage('stat', 'stat <file>...');
   const lines = [];
   for (const name of operands) {
     const p = normalizePath(name);
@@ -519,7 +521,48 @@ function handle(line) {
     return false;
   }
   if (cmd === 'help') {
-    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | nano [file] | touch <file> | stat <file> | find [path] | tree [path] | du [path] | head [-n N] <file> | tail [-n N] <file> | wc [-lwc] <file> | grep [-iv] <pat> <file> | sort [-r] <file> | sleep <sec> | beep [-f Hz] [-l ms] [-r n] [-d ms] [-n wave] [-v vol] | hexdump <file> | strings [-n N] <file> | df | free | clear | exit\n');
+    const help = [
+      '4004 shell - available commands',
+      '',
+      '  FILE SYSTEM',
+      '    ls [path]              list directory (default: .)',
+      '    cd [path]              change directory (default: /home)',
+      '    pwd                    print working directory',
+      '    cat <file>...          print file contents',
+      '    touch <file>...        create files / update mtime',
+      '    stat <file>...         show file metadata',
+      '    mkdir [-p] <dir>...    create directories',
+      '    rm [-rf] <file>...     remove files ( -r: dirs, -f: force )',
+      '    cp <src>... <dst>      copy files to file/directory',
+      '    mv <src>... <dst>      move/rename files',
+      '    find [path]            list all descendants',
+      '    tree [path]            print directory tree',
+      '    du [path]              disk usage by file',
+      '    df                     filesystem free space',
+      '    free                   RAM usage',
+      '',
+      '  TEXT',
+      '    nano [file]            fullscreen editor',
+      '    echo <text>            print text (supports \\n \\t \\xHH)',
+      '    head [-n N] <file>     first N lines (default 10)',
+      '    tail [-n N] <file>     last N lines (default 10)',
+      '    wc [-lwc] <file>...    count lines / words / bytes',
+      '    grep [-iv] <pat> <file>   search lines ( -i: ignore case, -v: invert )',
+      '    sort [-r] <file>       sort lines ( -r: reverse )',
+      '    hexdump <file>         hex + ASCII dump',
+      '    strings [-n N] <file>  printable strings (default N=4)',
+      '',
+      '  SOUND / MISC',
+      '    beep [-f Hz] [-l ms] [-r n] [-d ms] [-n wave] [-v vol]',
+      '                           play tone (wave: square|sine|triangle)',
+      '    sleep <sec>            wait for N seconds',
+      '    clear                  clear screen',
+      '    help                   show this help',
+      '    exit                   leave the shell',
+      '',
+      '  <required>  [optional]  ...  one or more'
+    ];
+    printViaCpu(help.join('\n'));
   } else if (cmd === 'clear') {
     out('\x1b[2J\x1b[H');
   } else if (cmd === 'echo') {
