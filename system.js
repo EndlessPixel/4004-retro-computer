@@ -134,6 +134,49 @@ function cmdCat(arg) {
   return content.replace(/[^\x20-\x7e\n]/g, '.');
 }
 
+const FS_ERR = {
+  'no such file': 'No such file or directory',
+  'no such directory': 'No such file or directory',
+  'is a directory': 'Is a directory'
+};
+const fsErr = e => FS_ERR[e] || e.charAt(0).toUpperCase() + e.slice(1);
+
+function splitArgs(s) { return s.trim().split(/\s+/).filter(Boolean); }
+
+function cmdMkdir(arg) {
+  const args = splitArgs(arg);
+  if (!args.length) return 'mkdir: missing operand';
+  const target = normalizePath(args[0]);
+  const err = fs.mkdir(target);
+  return err ? `mkdir: cannot create directory '${args[0]}': ${fsErr(err)}` : null;
+}
+
+function cmdRm(arg) {
+  const args = splitArgs(arg);
+  if (!args.length) return 'rm: missing operand';
+  const target = normalizePath(args[0]);
+  const err = fs.rm(target);
+  return err ? `rm: cannot remove '${args[0]}': ${fsErr(err)}` : null;
+}
+
+function cmdCp(arg) {
+  const args = splitArgs(arg);
+  if (args.length < 2) return 'cp: missing destination file operand';
+  const src = normalizePath(args[0]);
+  const dst = normalizePath(args[1]);
+  const err = fs.cp(src, dst);
+  return err ? `cp: ${fsErr(err)}` : null;
+}
+
+function cmdMv(arg) {
+  const args = splitArgs(arg);
+  if (args.length < 2) return 'mv: missing destination file operand';
+  const src = normalizePath(args[0]);
+  const dst = normalizePath(args[1]);
+  const err = fs.mv(src, dst);
+  return err ? `mv: ${fsErr(err)}` : null;
+}
+
 function handle(line) {
   const cmd = line.trim();
   if (!cmd) return true;
@@ -142,7 +185,7 @@ function handle(line) {
     return false;
   }
   if (cmd === 'help') {
-    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | clear | exit\n');
+    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | clear | exit\n');
   } else if (cmd === 'clear') {
     out('\x1b[2J\x1b[H');
   } else if (cmd === 'echo') {
@@ -158,6 +201,18 @@ function handle(line) {
     printViaCpu(cwd);
   } else if (cmd === 'cat' || cmd.startsWith('cat ')) {
     printViaCpu(cmdCat(cmd.slice(3).trim()));
+  } else if (cmd === 'mkdir' || cmd.startsWith('mkdir ')) {
+    const err = cmdMkdir(cmd.slice(5));
+    if (err) printViaCpu(err);
+  } else if (cmd === 'rm' || cmd.startsWith('rm ')) {
+    const err = cmdRm(cmd.slice(2));
+    if (err) printViaCpu(err);
+  } else if (cmd === 'cp' || cmd.startsWith('cp ')) {
+    const err = cmdCp(cmd.slice(2));
+    if (err) printViaCpu(err);
+  } else if (cmd === 'mv' || cmd.startsWith('mv ')) {
+    const err = cmdMv(cmd.slice(2));
+    if (err) printViaCpu(err);
   } else {
     out(`unknown command: ${cmd.split(/\s+/)[0]}\n`);
   }
