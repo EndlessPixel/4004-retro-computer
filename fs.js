@@ -138,6 +138,13 @@ class FileSystem {
     return null;
   }
 
+  // df 用：扇区总量 / 已用 / 可用
+  usage() {
+    const total = this.disk.sectorCount;
+    const used = this._usedSectors().size;
+    return { total, used, free: total - used, sectorSize: this.disk.sectorSize };
+  }
+
   _clearSector(sector) {
     for (let i = 0; i < this.disk.sectorSize; i++) this.disk.writeByte(sector, i, 0);
   }

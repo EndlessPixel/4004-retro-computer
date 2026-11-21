@@ -237,6 +237,25 @@ function cmdMv(arg) {
   return errors.join('\n') || null;
 }
 
+function cmdDf() {
+  const u = fs.usage();
+  const pct = Math.round(u.used / u.total * 100);
+  return [
+    'Filesystem   Sectors    Used   Free Use% Mounted on',
+    `/dev/ram0   ${String(u.total).padStart(7)} ${String(u.used).padStart(7)} ${String(u.free).padStart(6)} ${String(pct).padStart(3)}% /`,
+    `            (${u.total * u.sectorSize} bytes total, ${u.sectorSize} bytes/sector)`
+  ].join('\n');
+}
+
+function cmdFree() {
+  const u = cpu.memory.ramUsage();
+  return [
+    '          total   used   free',
+    `4002 RAM  ${String(u.total).padStart(6)} ${String(u.used).padStart(6)} ${String(u.free).padStart(6)}`,
+    `          (nibbles; ${u.total / 2} bytes total)`
+  ].join('\n');
+}
+
 function handle(line) {
   const cmd = line.trim();
   if (!cmd) return true;
@@ -245,7 +264,7 @@ function handle(line) {
     return false;
   }
   if (cmd === 'help') {
-    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | nano [file] | clear | exit\n');
+    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | nano [file] | df | free | clear | exit\n');
   } else if (cmd === 'clear') {
     out('\x1b[2J\x1b[H');
   } else if (cmd === 'echo') {
@@ -278,6 +297,10 @@ function handle(line) {
     if (error) out(`nano: ${error}\n`);
     else if (launchEditor) { enteredEditor = true; launchEditor(operands[0] || ''); }
     else out('nano: not available in this mode\n');
+  } else if (cmd === 'df') {
+    printViaCpu(cmdDf());
+  } else if (cmd === 'free') {
+    printViaCpu(cmdFree());
   } else {
     out(`unknown command: ${cmd.split(/\s+/)[0]}\n`);
   }
@@ -442,7 +465,7 @@ if (VNC) {
   const KEYMAP = {
     enter: 'Enter', backspace: 'Backspace', delete: 'Delete',
     left: 'ArrowLeft', right: 'ArrowRight', up: 'ArrowUp', down: 'ArrowDown',
-    home: 'Home', end: 'End', escape: 'Escape', tab: 'Tab'
+    home: 'Home', end: 'End', escape: 'Escape', tab: 'Tab', f10: 'F10'
   };
   function keyName(str, key) {
     if (key.ctrl && key.name) return 'Ctrl+' + key.name.toUpperCase();
