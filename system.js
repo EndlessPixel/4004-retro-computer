@@ -864,6 +864,22 @@ if (VNC) {
       });
       return;
     }
+    if (req.method === 'POST' && pathname === '/paste') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const text = JSON.parse(body).text || '';
+          for (const ch of text) {
+            onKey(ch === '\n' ? 'Enter' : ch === '\t' ? 'Tab' : ch);
+          }
+        } catch (e) { /* ignore */ }
+        res.writeHead(204);
+        res.end();
+        if (frameDirty) broadcast();
+      });
+      return;
+    }
     res.writeHead(404);
     res.end('not found');
   });

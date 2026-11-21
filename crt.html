@@ -177,6 +177,18 @@
   });
 
   document.addEventListener('keydown', (e) => {
+    // Ctrl+Shift+V：从剪贴板粘贴，整段发给后端逐字符处理
+    if (e.ctrlKey && e.shiftKey && (e.code === 'KeyV' || e.key.toLowerCase() === 'v')) {
+      e.preventDefault();
+      e.stopPropagation();
+      navigator.clipboard.readText().then(text => {
+        if (text) fetch('/paste', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ text })
+        });
+      }).catch(err => console.error('paste failed', err));
+      return;
+    }
     let key = null;
     if (e.ctrlKey) {
       // 用 code 而非 key：Ctrl 组合下 key 可能是控制字符（如 Ctrl+X 的 \x18）
