@@ -35,6 +35,7 @@ class Framebuffer {
     if (code === 13) { this.cx = 0; return; }
     if (code === 10) { this.cx = 0; this._lineFeed(); return; }
     if (code === 8) { if (this.cx > 0) this.cx -= 1; return; }
+    if (code === 9) { this.cx = Math.min(this.cols - 1, (Math.floor(this.cx / 8) + 1) * 8); return; }
     if (code === 0x1b) return;
     if (code < 32 || code > 126) code = 0x3f;
     this.cells[this.cy * this.cols + this.cx] = code;
