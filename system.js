@@ -237,6 +237,45 @@ function cmdMv(arg) {
   return errors.join('\n') || null;
 }
 
+function fmtTime(t) {
+  if (!t) return 'Jan  1 00:00';
+  const d = new Date(t * 1000);
+  const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()];
+  const p = n => String(n).padStart(2, '0');
+  return `${mon} ${String(d.getUTCDate()).padStart(2)} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+
+function cmdTouch(arg) {
+  const { operands } = parseArgs(arg, '');
+  if (!operands.length) return 'touch: missing file operand';
+  const errors = [];
+  for (const name of operands) {
+    const err = fs.touch(normalizePath(name));
+    if (err) errors.push(`touch: cannot touch '${name}': ${fsErr(err)}`);
+  }
+  return errors.join('\n') || null;
+}
+
+function cmdStat(arg) {
+  const { operands } = parseArgs(arg, '');
+  if (!operands.length) return 'stat: missing operand';
+  const lines = [];
+  for (const name of operands) {
+    const p = normalizePath(name);
+    const st = fs.stat(p);
+    if (!st) return `stat: cannot stat '${name}': No such file or directory`;
+    const size = st.type === 'f' ? fs.fileSize(p) : 0;
+    lines.push([
+      `  File: ${name}`,
+      `  Type: ${st.type === 'd' ? 'directory' : 'regular file'}`,
+      `  Size: ${size}`,
+      `  Inode: sector ${st.sector}`,
+      `Modify: ${fmtTime(st.mtime)}`
+    ].join('\n'));
+  }
+  return lines.join('\n');
+}
+
 function cmdDf() {
   const u = fs.usage();
   const pct = Math.round(u.used / u.total * 100);
@@ -264,7 +303,7 @@ function handle(line) {
     return false;
   }
   if (cmd === 'help') {
-    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | nano [file] | df | free | clear | exit\n');
+    out('commands: echo <text> | ls [path] | cd [path] | pwd | cat <file> | mkdir <dir> | rm <file> | cp <src> <dst> | mv <src> <dst> | nano [file] | touch <file> | stat <file> | df | free | clear | exit\n');
   } else if (cmd === 'clear') {
     out('\x1b[2J\x1b[H');
   } else if (cmd === 'echo') {
@@ -297,6 +336,11 @@ function handle(line) {
     if (error) out(`nano: ${error}\n`);
     else if (launchEditor) { enteredEditor = true; launchEditor(operands[0] || ''); }
     else out('nano: not available in this mode\n');
+  } else if (cmd === 'touch' || cmd.startsWith('touch ')) {
+    const err = cmdTouch(cmd.slice(5));
+    if (err) printViaCpu(err);
+  } else if (cmd === 'stat' || cmd.startsWith('stat ')) {
+    printViaCpu(cmdStat(cmd.slice(4)));
   } else if (cmd === 'df') {
     printViaCpu(cmdDf());
   } else if (cmd === 'free') {

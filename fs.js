@@ -33,7 +33,7 @@ class FileSystem {
     this.disk.writeByte(sector, text.length, 0);
   }
 
-  _writeEntry(sector, index, name, type, dataSector) {
+  _writeEntry(sector, index, name, type, dataSector, mtime = 0) {
     const base = index * ENTRY_SIZE;
     for (let i = 0; i < ENTRY_SIZE; i++) this.disk.writeByte(sector, base + i, 0);
     for (let i = 0; i < 8; i++) {
@@ -41,6 +41,9 @@ class FileSystem {
     }
     this.disk.writeByte(sector, base + 8, type.charCodeAt(0));
     this.disk.writeByte(sector, base + 9, dataSector);
+    // 字节 10-13：32 位 unix 时间戳（旧镜像为 0，视为未知）
+    const t = mtime >>> 0;
+    for (let i = 0; i < 4; i++) this.disk.writeByte(sector, base + 10 + i, (t >>> (i * 8)) & 0xff);
   }
 
   _readEntries(sector) {
@@ -55,10 +58,15 @@ class FileSystem {
         nameBytes.push(b);
       }
       if (!nameBytes.length) break;
+      const mtime = this.disk.readByte(sector, base + 10)
+        | (this.disk.readByte(sector, base + 11) << 8)
+        | (this.disk.readByte(sector, base + 12) << 16)
+        | (this.disk.readByte(sector, base + 13) << 24);
       entries.push({
         name: String.fromCharCode(...nameBytes),
         type: String.fromCharCode(this.disk.readByte(sector, base + 8)),
-        sector: this.disk.readByte(sector, base + 9)
+        sector: this.disk.readByte(sector, base + 9),
+        mtime: mtime >>> 0
       });
     }
     return entries;
@@ -96,6 +104,33 @@ class FileSystem {
       bytes.push(b);
     }
     return String.fromCharCode(...bytes);
+  }
+
+  now() { return Math.floor(Date.now() / 1000); }
+
+  fileSize(path) {
+    const loc = this._locate(path);
+    if (!loc || !loc.entry || loc.entry.type !== 'f') return null;
+    let size = 0;
+    while (size < this.disk.sectorSize && this.disk.readByte(loc.entry.sector, size) !== 0) size++;
+    return size;
+  }
+
+  touch(path) {
+    const loc = this._locate(path);
+    if (loc && loc.entry) {
+      const t = this.now();
+      this._writeEntry(loc.parent, loc.index, loc.name, loc.entry.type, loc.entry.sector, t);
+      return null;
+    }
+    return this.writeFile(path, '');
+  }
+
+  setMtime(path, t) {
+    const loc = this._locate(path);
+    if (!loc || !loc.entry) return 'no such file';
+    this._writeEntry(loc.parent, loc.index, loc.name, loc.entry.type, loc.entry.sector, t >>> 0);
+    return null;
   }
 
   // path 为规范化的绝对路径。返回所在目录扇区、名字、目录项与索引
@@ -155,10 +190,10 @@ class FileSystem {
     }
   }
 
-  _addEntry(dirSector, name, type, dataSector) {
+  _addEntry(dirSector, name, type, dataSector, mtime = 0) {
     const index = this._readEntries(dirSector).length;
     if (index >= 15) return false;
-    this._writeEntry(dirSector, index, name, type, dataSector);
+    this._writeEntry(dirSector, index, name, type, dataSector, mtime);
     return true;
   }
 
@@ -214,6 +249,7 @@ class FileSystem {
       if (!this._addEntry(parent, name, 'f', sector)) return 'directory full';
     }
     this._writeFile(sector, text);
+    this.setMtime(path, this.now());
     return null;
   }
 
