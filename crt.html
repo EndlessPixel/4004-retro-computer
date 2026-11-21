@@ -66,12 +66,17 @@
   let W = 640, H = 200, STRIDE = 80;
   let target = new Uint8Array(STRIDE * H);   // 后端推来的目标像素
   let phosphor = new Float32Array(W * H);     // 每个磷光点的亮度，随时间衰减
+  let burn = new Float32Array(W * H);         // 烧入度：长期轰击后留下的永久残影
   let beam = 0;                               // 电子束当前像素位置
 
   // 电子束速度：每帧轰击的像素数。一整屏 128000 点，约 40 帧扫完
   const BEAM_SPEED = 3200;
   // 磷光余辉：每帧衰减系数，越小余辉越短、扫描束越明显
   const DECAY = 0.978;
+  // 烧屏：被持续轰击的像素累积烧入，衰减越来越慢
+  const BURN_IN = 0.006;    // 每次轰击增加的烧入度（约 2 分钟烧满）
+  const BURN_DECAY = 0.99992; // 无轰击时烧入极缓慢消退（能持续累积）
+  const BURN_LIGHT = 0.28;  // 烧入像素贡献的底光亮度
 
   const img = ctx.createImageData(W, H);
   const data = img.data;
@@ -80,6 +85,7 @@
     W = w; H = h; STRIDE = w / 8;
     canvas.width = W; canvas.height = H;
     phosphor = new Float32Array(W * H);
+    burn = new Float32Array(W * H);
     target = new Uint8Array(STRIDE * H);
     beam = 0;
   }
@@ -89,21 +95,28 @@
   }
 
   function frame() {
-    // 余辉衰减：所有磷光点亮度按指数衰减
-    for (let i = 0; i < phosphor.length; i++) phosphor[i] *= DECAY;
+    // 余辉衰减：烧入越深的点衰减越慢（趋近不衰减），形成烧屏残影
+    for (let i = 0; i < phosphor.length; i++) {
+      const decay = DECAY + burn[i] * (0.9998 - DECAY);
+      phosphor[i] *= decay;
+      burn[i] *= BURN_DECAY;
+    }
 
     // 电子束按光栅从左到右、从上到下逐点轰击
     for (let n = 0; n < BEAM_SPEED; n++) {
       const x = beam % W;
       const y = (beam / W) | 0;
-      // 目标点亮则充到最亮；否则该点本帧不被轰击
-      if (onTarget(x, y)) phosphor[beam] = 1.0;
+      // 目标点亮则充到最亮，并累积烧入度
+      if (onTarget(x, y)) {
+        phosphor[beam] = 1.0;
+        burn[beam] = Math.min(1, burn[beam] + BURN_IN);
+      }
       beam = (beam + 1) % phosphor.length;
     }
 
-    // 磷光亮度 -> 像素颜色
+    // 磷光亮度 + 烧屏底光 -> 像素颜色
     for (let i = 0, o = 0; i < phosphor.length; i++, o += 4) {
-      const v = phosphor[i];
+      const v = Math.min(1, phosphor[i] + burn[i] * BURN_LIGHT);
       data[o]     = 3 + (v * 136) | 0;
       data[o + 1] = 10 + (v * 245) | 0;
       data[o + 2] = 6 + (v * 158) | 0;
