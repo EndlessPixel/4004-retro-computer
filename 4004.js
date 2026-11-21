@@ -1,21 +1,13 @@
+const { Memory } = require('./memory');
+
 class Intel4004 {
   constructor() {
-    this.rom = new Uint8Array(4096);
+    this.memory = new Memory();
     this.reg = new Uint8Array(16);
     this.A = 0;
     this.C = 0;
     this.PC = 0;
     this.stop = false;
-
-    // 4002 RAM
-    this.ram = Array.from({ length: 16 }, () =>
-      Array.from({ length: 4 }, () => new Uint8Array(16))
-    );
-    this.status = Array.from({ length: 16 }, () =>
-      Array.from({ length: 4 }, () => new Uint8Array(4))
-    );
-    this.ramChip = 0;
-    this.ramBank = 0;
 
     // 时序
     this.T = 0;          // T 0~7，每个M-cycle内部状态
@@ -30,8 +22,7 @@ class Intel4004 {
   }
 
   loadRom(bin) {
-    const len = Math.min(bin.length, 4096);
-    for (let i = 0; i < len; i++) this.rom[i] = bin[i] & 0xff;
+    this.memory.loadRom(bin);
     this.reset();
   }
 
@@ -41,8 +32,7 @@ class Intel4004 {
     this.C = 0;
     this.reg.fill(0);
     this.stop = false;
-    this.ramChip = 0;
-    this.ramBank = 0;
+    this.memory.resetSelection();
 
     this.T = 0;
     this.cycle = 0;
@@ -130,35 +120,35 @@ class Intel4004 {
         case 0xF:
           switch (low) {
             case 0x0: // WRM
-              this.ram[this.ramChip][this.ramBank][this.reg[0] & 0xf] = this.A & 0xf;
+              this.memory.writeRam(this.reg[0] & 0xf, this.A & 0xf);
               break;
             case 0x1: // WRR
               break;
             case 0x2: // WPM
               break;
             case 0x3: // WR0
-              this.status[this.ramChip][this.ramBank][0] = this.A & 0xf;
+              this.memory.writeStatus(0, this.A & 0xf);
               break;
             case 0x4: // WR1
-              this.status[this.ramChip][this.ramBank][1] = this.A & 0xf;
+              this.memory.writeStatus(1, this.A & 0xf);
               break;
             case 0x5: // WR2
-              this.status[this.ramChip][this.ramBank][2] = this.A & 0xf;
+              this.memory.writeStatus(2, this.A & 0xf);
               break;
             case 0x6: // WR3
-              this.status[this.ramChip][this.ramBank][3] = this.A & 0xf;
+              this.memory.writeStatus(3, this.A & 0xf);
               break;
             case 0x7: // SBM
-              this.A = this.status[this.ramChip][this.ramBank][0] & 0xf;
+              this.A = this.memory.readStatus(0) & 0xf;
               break;
             case 0x8: // RDM
-              this.A = this.ram[this.ramChip][this.ramBank][this.reg[0] & 0xf] & 0xf;
+              this.A = this.memory.readRam(this.reg[0] & 0xf) & 0xf;
               break;
             case 0x9: // RDR
               break;
             case 0xA: // ADM
               {
-                const s = this.status[this.ramChip][this.ramBank][0];
+                const s = this.memory.readStatus(0);
                 const sum = this.A + s + this.C;
                 this.A = sum & 0xf;
                 this.C = (sum >> 4) & 1;
@@ -166,15 +156,14 @@ class Intel4004 {
               break;
             case 0xB: // SUBB
               {
-                const s = this.status[this.ramChip][this.ramBank][0];
+                const s = this.memory.readStatus(0);
                 const sub = this.A - s - this.C;
                 this.A = sub & 0xf;
                 this.C = sub >= 0 ? 1 : 0;
               }
               break;
             case 0xC: // LRM
-              this.ramChip = this.reg[1] & 0xf;
-              this.ramBank = this.reg[2] & 0x3;
+              this.memory.select(this.reg[1] & 0xf, this.reg[2] & 0x3);
               break;
             case 0xD: // OR4
             case 0xE: // OR5
@@ -260,7 +249,7 @@ class Intel4004 {
       }
     } else if (t === 1) {
       if (this._isFetchCycle()) {
-        this.bus = this.rom[this.addr];
+        this.bus = this.memory.readRom(this.addr);
         if (this.mcycle === 0) {
           this.instOpcode = this.bus;
         } else {
@@ -316,8 +305,8 @@ class Intel4004 {
       bus: this.bus,
       addr: this.addr.toString(16),
       reg: Array.from(this.reg),
-      ramChip: this.ramChip,
-      ramBank: this.ramBank
+      ramChip: this.memory.chip,
+      ramBank: this.memory.bank
     }
   }
 }
@@ -350,3 +339,11 @@ cpu2.loadRom(rom2);
 while (!cpu2.stop) cpu2.stepInst();
 console.log("===== JMS/BBL 验证 =====");
 console.log(cpu2.dump());
+
+// 验证内存读写：LDM 5 -> WRM -> RDM -> HLT，A 应回到 5
+const cpu3 = new Intel4004();
+const rom3 = new Uint8Array([0xC5, 0xF0, 0xF8, 0xFF]);
+cpu3.loadRom(rom3);
+while (!cpu3.stop) cpu3.stepInst();
+console.log("===== RAM 读写验证 =====");
+console.log(cpu3.dump());
